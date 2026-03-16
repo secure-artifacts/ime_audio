@@ -1,0 +1,2746 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <string.h>
+#include <wchar.h>
+#include <wctype.h>
+#include <windows.h>
+#include <shellapi.h>
+
+#include "asr_backend.h"
+#include "audio_recorder.h"
+#include "groq_client.h"
+#include "input_injector.h"
+
+#define MAIN_CLASS_NAME L"VoiceImeMainWindow"
+#define FLOAT_CLASS_NAME L"VoiceImeFloatWindow"
+#define APP_TITLE L"语音输入助手"
+
+#define HOTKEY_RECORD_ID 1
+
+#define WMAPP_TRAYICON (WM_APP + 1)
+#define WMAPP_TRANSCRIBE_DONE (WM_APP + 2)
+#define WMAPP_FLOAT_TOGGLE (WM_APP + 3)
+
+#define TIMER_FOLLOW_INPUT 1
+#define TRAY_ICON_ID 1001
+
+#define IDC_EDIT_API 2001
+#define IDC_EDIT_HOTKEY 2002
+#define IDC_CHECK_CTRL 2003
+#define IDC_CHECK_ALT 2004
+#define IDC_CHECK_SHIFT 2005
+#define IDC_CHECK_WIN 2006
+#define IDC_BTN_APPLY 2007
+#define IDC_LABEL_STATUS 2008
+#define IDC_LABEL_CURRENT_HOTKEY 2009
+#define IDC_COMBO_BACKEND 2010
+#define IDC_CHECK_CONTINUOUS 2011
+#define IDC_EDIT_THRESHOLD 2012
+#define IDC_EDIT_SILENCE 2013
+#define IDC_EDIT_MINREC 2014
+#define IDC_EDIT_MAXREC 2015
+#define IDC_EDIT_SHERPA_EXE 2016
+#define IDC_EDIT_SHERPA_ARGS 2017
+#define IDC_BTN_SELF_CHECK 2018
+#define IDC_BTN_INSTALL_SHERPA 2019
+#define IDC_LABEL_SELFCHECK 2020
+#define IDC_BTN_EXIT 2021
+#define IDC_CHECK_AUTO_STOP 2022
+#define IDC_EDIT_REPLACE_RULES 2023
+
+#define IDC_FLOAT_TOGGLE 3001
+#define IDC_FLOAT_STATUS 3002
+
+#define ID_TRAY_OPEN 4001
+#define ID_TRAY_EXIT 4002
+
+typedef enum VoiceState {
+    VOICE_IDLE = 0,
+    VOICE_RECORDING = 1,
+    VOICE_TRANSCRIBING = 2
+} VoiceState;
+
+typedef struct AppState {
+    HINSTANCE instance;
+    HWND main_hwnd;
+    HWND float_hwnd;
+    HWND api_edit;
+    HWND hotkey_edit;
+    HWND check_ctrl;
+    HWND check_alt;
+    HWND check_shift;
+    HWND check_win;
+    HWND backend_combo;
+    HWND continuous_check;
+    HWND auto_stop_check;
+    HWND threshold_edit;
+    HWND silence_edit;
+    HWND minrec_edit;
+    HWND maxrec_edit;
+    HWND sherpa_exe_edit;
+    HWND sherpa_args_edit;
+    HWND replace_rules_edit;
+    HWND selfcheck_label;
+    HWND status_label;
+    HWND current_hotkey_label;
+    HWND float_button;
+    HWND float_status;
+
+    wchar_t config_path[MAX_PATH];
+    wchar_t wav_path[MAX_PATH];
+    wchar_t log_path[MAX_PATH];
+    wchar_t sherpa_exe[MAX_PATH];
+    wchar_t sherpa_args[1024];
+    wchar_t replace_rules[2048];
+
+    UINT hotkey_mods;
+    UINT hotkey_vk;
+    BOOL hotkey_registered;
+    BOOL tray_added;
+    BOOL exit_requested;
+    BOOL continuous_mode;
+    BOOL auto_stop_enabled;
+    BOOL stop_after_current;
+
+    AsrBackendKind backend;
+    AudioRecorderConfig recorder_config;
+
+    VoiceState state;
+    HANDLE worker_thread;
+
+    HWND target_window;
+    HWND follow_target_window;
+} AppState;
+
+typedef struct TranscribeTask {
+    HWND notify_hwnd;
+    wchar_t wav_path[MAX_PATH];
+    wchar_t sherpa_exe[MAX_PATH];
+    wchar_t sherpa_args[1024];
+    AsrBackendKind backend;
+    char *api_key;
+    HWND target_window;
+} TranscribeTask;
+
+typedef struct TranscribeResult {
+    BOOL success;
+    char *text;
+    char *error_text;
+    HWND target_window;
+} TranscribeResult;
+
+static void trim_wide_whitespace(wchar_t *text);
+static void save_settings(AppState *app);
+static char *wide_to_utf8_alloc(const wchar_t *wide_text);
+static wchar_t *utf8_to_wide_alloc(const char *utf8_text);
+
+static BOOL build_temp_wav_path(wchar_t *out_path, DWORD out_path_size) {
+    wchar_t temp_dir[MAX_PATH];
+    DWORD len = GetTempPathW(MAX_PATH, temp_dir);
+
+    if (len == 0 || len >= MAX_PATH) {
+        return FALSE;
+    }
+
+    if (swprintf(out_path, out_path_size, L"%lsvoice_ime_record.wav", temp_dir) < 0) {
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static BOOL build_config_path(wchar_t *out_path, DWORD out_path_size) {
+    wchar_t module_path[MAX_PATH];
+    DWORD len = GetModuleFileNameW(NULL, module_path, MAX_PATH);
+    BOOL slash_found = FALSE;
+    DWORD i = 0;
+
+    if (len == 0 || len >= MAX_PATH) {
+        return FALSE;
+    }
+
+    for (i = len; i > 0; --i) {
+        if (module_path[i - 1] == L'\\') {
+            module_path[i] = L'\0';
+            slash_found = TRUE;
+            break;
+        }
+    }
+
+    if (!slash_found) {
+        return FALSE;
+    }
+
+    if (swprintf(out_path, out_path_size, L"%lsvoice_ime.ini", module_path) < 0) {
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static BOOL build_log_path(const wchar_t *config_path, wchar_t *out_path, DWORD out_path_size) {
+    wchar_t temp[MAX_PATH];
+    size_t len = 0;
+
+    if (!config_path || !out_path || out_path_size == 0) {
+        return FALSE;
+    }
+
+    wcsncpy_s(temp, _countof(temp), config_path, _TRUNCATE);
+    len = wcslen(temp);
+    while (len > 0) {
+        if (temp[len - 1] == L'\\' || temp[len - 1] == L'/') {
+            break;
+        }
+        len--;
+    }
+
+    if (len == 0) {
+        return FALSE;
+    }
+
+    temp[len] = L'\0';
+    if (swprintf(out_path, out_path_size, L"%lsvoice_ime.log", temp) < 0) {
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static void extract_parent_dir(const wchar_t *path, wchar_t *out_dir, size_t out_len) {
+    size_t len = 0;
+
+    if (!path || !out_dir || out_len == 0) {
+        return;
+    }
+
+    wcsncpy_s(out_dir, out_len, path, _TRUNCATE);
+    len = wcslen(out_dir);
+    while (len > 0) {
+        if (out_dir[len - 1] == L'\\' || out_dir[len - 1] == L'/') {
+            out_dir[len - 1] = L'\0';
+            return;
+        }
+        len--;
+    }
+
+    out_dir[0] = L'\0';
+}
+
+static BOOL file_exists_non_dir(const wchar_t *path) {
+    DWORD attrs;
+
+    if (!path || path[0] == L'\0') {
+        return FALSE;
+    }
+
+    attrs = GetFileAttributesW(path);
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        return FALSE;
+    }
+
+    return (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+static BOOL is_absolute_path_w(const wchar_t *path) {
+    if (!path || path[0] == L'\0') {
+        return FALSE;
+    }
+
+    if ((wcslen(path) >= 2 && path[1] == L':') ||
+        (path[0] == L'\\' && path[1] == L'\\') ||
+        path[0] == L'/' || path[0] == L'\\') {
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static void resolve_path_from_base(const wchar_t *base_dir,
+                                   const wchar_t *maybe_relative,
+                                   wchar_t *out_path,
+                                   size_t out_len) {
+    if (!out_path || out_len == 0) {
+        return;
+    }
+
+    out_path[0] = L'\0';
+    if (!maybe_relative || maybe_relative[0] == L'\0') {
+        return;
+    }
+
+    if (is_absolute_path_w(maybe_relative) || !base_dir || base_dir[0] == L'\0') {
+        wcsncpy_s(out_path, out_len, maybe_relative, _TRUNCATE);
+        return;
+    }
+
+    swprintf(out_path, out_len, L"%ls\\%ls", base_dir, maybe_relative);
+}
+
+static BOOL extract_option_value(const wchar_t *args,
+                                 const wchar_t *prefix,
+                                 wchar_t *out_value,
+                                 size_t out_len) {
+    size_t prefix_len = 0;
+    const wchar_t *p = args;
+
+    if (!args || !prefix || !out_value || out_len == 0) {
+        return FALSE;
+    }
+
+    out_value[0] = L'\0';
+    prefix_len = wcslen(prefix);
+
+    while (*p) {
+        size_t copied = 0;
+        while (*p && iswspace(*p)) {
+            p++;
+        }
+
+        if (_wcsnicmp(p, prefix, prefix_len) == 0) {
+            const wchar_t *v = p + prefix_len;
+            if (*v == L'"') {
+                v++;
+                while (v[copied] && v[copied] != L'"' && copied + 1 < out_len) {
+                    out_value[copied] = v[copied];
+                    copied++;
+                }
+            } else {
+                while (v[copied] && !iswspace(v[copied]) && copied + 1 < out_len) {
+                    out_value[copied] = v[copied];
+                    copied++;
+                }
+            }
+
+            out_value[copied] = L'\0';
+            trim_wide_whitespace(out_value);
+            return out_value[0] != L'\0';
+        }
+
+        while (*p && !iswspace(*p)) {
+            p++;
+        }
+    }
+
+    return FALSE;
+}
+
+static void app_log_line(const AppState *app, const char *fmt, ...) {
+    HANDLE file_handle = INVALID_HANDLE_VALUE;
+    SYSTEMTIME st;
+    char line[1536];
+    char payload[1300];
+    DWORD written = 0;
+    va_list args;
+
+    if (!app || !app->log_path[0] || !fmt) {
+        return;
+    }
+
+    GetLocalTime(&st);
+
+    va_start(args, fmt);
+    vsnprintf(payload, sizeof(payload), fmt, args);
+    va_end(args);
+
+    snprintf(line,
+             sizeof(line),
+             "%04u-%02u-%02u %02u:%02u:%02u.%03u | %s\\r\\n",
+             (unsigned)st.wYear,
+             (unsigned)st.wMonth,
+             (unsigned)st.wDay,
+             (unsigned)st.wHour,
+             (unsigned)st.wMinute,
+             (unsigned)st.wSecond,
+             (unsigned)st.wMilliseconds,
+             payload);
+
+    file_handle = CreateFileW(app->log_path,
+                              FILE_APPEND_DATA,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              NULL,
+                              OPEN_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL,
+                              NULL);
+    if (file_handle == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    WriteFile(file_handle, line, (DWORD)strlen(line), &written, NULL);
+    CloseHandle(file_handle);
+}
+
+static void trim_ascii_whitespace(char *text) {
+    char *start = text;
+    char *end = NULL;
+
+    if (!text) {
+        return;
+    }
+
+    while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') {
+        start++;
+    }
+
+    if (start != text) {
+        memmove(text, start, strlen(start) + 1);
+    }
+
+    end = text + strlen(text);
+    while (end > text && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) {
+        end--;
+    }
+    *end = '\0';
+}
+
+static void trim_wide_whitespace(wchar_t *text) {
+    wchar_t *start = text;
+    wchar_t *end = NULL;
+
+    if (!text) {
+        return;
+    }
+
+    while (*start != L'\0' && iswspace(*start)) {
+        start++;
+    }
+
+    if (start != text) {
+        memmove(text, start, (wcslen(start) + 1) * sizeof(wchar_t));
+    }
+
+    end = text + wcslen(text);
+    while (end > text && iswspace(end[-1])) {
+        end--;
+    }
+    *end = L'\0';
+}
+
+static BOOL contains_non_ascii_utf8(const char *text) {
+    const unsigned char *p = (const unsigned char *)text;
+
+    if (!text) {
+        return FALSE;
+    }
+
+    while (*p) {
+        if (*p >= 0x80) {
+            return TRUE;
+        }
+        p++;
+    }
+
+    return FALSE;
+}
+
+static BOOL ends_with_token_utf8(const char *text, size_t text_len, const char *token) {
+    size_t token_len = 0;
+
+    if (!text || !token) {
+        return FALSE;
+    }
+
+    token_len = strlen(token);
+    if (token_len == 0 || token_len > text_len) {
+        return FALSE;
+    }
+
+    return memcmp(text + text_len - token_len, token, token_len) == 0;
+}
+
+static BOOL contains_token_utf8(const char *text, const char *token) {
+    if (!text || !token || token[0] == '\0') {
+        return FALSE;
+    }
+
+    return strstr(text, token) != NULL;
+}
+
+static BOOL text_ends_with_sentence_punctuation(const char *text) {
+    size_t len = 0;
+    unsigned char last = 0;
+
+    if (!text) {
+        return FALSE;
+    }
+
+    len = strlen(text);
+    while (len > 0 && isspace((unsigned char)text[len - 1])) {
+        len--;
+    }
+
+    if (len == 0) {
+        return FALSE;
+    }
+
+    last = (unsigned char)text[len - 1];
+    if (last == '.' || last == '!' || last == '?' || last == ',' || last == ';' || last == ':') {
+        return TRUE;
+    }
+
+    if (ends_with_token_utf8(text, len, "。") ||
+        ends_with_token_utf8(text, len, "！") ||
+        ends_with_token_utf8(text, len, "？") ||
+        ends_with_token_utf8(text, len, "，") ||
+        ends_with_token_utf8(text, len, "；") ||
+        ends_with_token_utf8(text, len, "：")) {
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static const char *pick_auto_punctuation_suffix(const char *text) {
+    static const char *question_suffixes[] = {"吗", "么", "嘛", "呢"};
+    static const char *question_keywords[] = {
+        "什么", "怎么", "为什么", "为啥", "是否", "是不是", "能不能", "可不可以",
+        "要不要", "有没有", "行不行", "哪儿", "哪里", "谁", "多久", "多少", "几点", "几号"
+    };
+    static const char *exclaim_suffixes[] = {"啊", "呀", "哇", "啦"};
+    static const char *exclaim_keywords[] = {"太好了", "太棒了", "真棒", "好厉害", "牛啊"};
+    size_t len = 0;
+    BOOL has_non_ascii = FALSE;
+    size_t i = 0;
+
+    if (!text || text[0] == '\0') {
+        return ".";
+    }
+
+    has_non_ascii = contains_non_ascii_utf8(text);
+    len = strlen(text);
+    while (len > 0 && isspace((unsigned char)text[len - 1])) {
+        len--;
+    }
+
+    if (len == 0) {
+        return has_non_ascii ? "。" : ".";
+    }
+
+    for (i = 0; i < _countof(question_suffixes); ++i) {
+        if (ends_with_token_utf8(text, len, question_suffixes[i])) {
+            return has_non_ascii ? "？" : "?";
+        }
+    }
+
+    for (i = 0; i < _countof(question_keywords); ++i) {
+        if (contains_token_utf8(text, question_keywords[i])) {
+            return has_non_ascii ? "？" : "?";
+        }
+    }
+
+    for (i = 0; i < _countof(exclaim_suffixes); ++i) {
+        if (ends_with_token_utf8(text, len, exclaim_suffixes[i])) {
+            return has_non_ascii ? "！" : "!";
+        }
+    }
+
+    for (i = 0; i < _countof(exclaim_keywords); ++i) {
+        if (contains_token_utf8(text, exclaim_keywords[i])) {
+            return has_non_ascii ? "！" : "!";
+        }
+    }
+
+    return has_non_ascii ? "。" : ".";
+}
+
+static void append_utf8_suffix(char **text_ptr, const char *suffix) {
+    size_t text_len = 0;
+    size_t suffix_len = 0;
+    char *merged = NULL;
+
+    if (!text_ptr || !*text_ptr || !suffix || suffix[0] == '\0') {
+        return;
+    }
+
+    text_len = strlen(*text_ptr);
+    suffix_len = strlen(suffix);
+    merged = (char *)realloc(*text_ptr, text_len + suffix_len + 1);
+    if (!merged) {
+        return;
+    }
+
+    memcpy(merged + text_len, suffix, suffix_len + 1);
+    *text_ptr = merged;
+}
+
+static void apply_simple_sherpa_punctuation(AppState *app, char **text_ptr) {
+    const char *suffix = NULL;
+
+    if (!app || !text_ptr || !*text_ptr) {
+        return;
+    }
+
+    if (app->backend != ASR_BACKEND_SHERPA) {
+        return;
+    }
+
+    trim_ascii_whitespace(*text_ptr);
+    if ((*text_ptr)[0] == '\0' || text_ends_with_sentence_punctuation(*text_ptr)) {
+        return;
+    }
+
+    suffix = pick_auto_punctuation_suffix(*text_ptr);
+    append_utf8_suffix(text_ptr, suffix);
+    app_log_line(app, "auto punctuation appended for sherpa text suffix=%s", suffix);
+}
+
+static int replace_all_wide(wchar_t **text_ptr, const wchar_t *from, const wchar_t *to) {
+    wchar_t *text = NULL;
+    const wchar_t *scan = NULL;
+    const wchar_t *hit = NULL;
+    wchar_t *new_text = NULL;
+    wchar_t *dst = NULL;
+    size_t from_len = 0;
+    size_t to_len = 0;
+    size_t old_len = 0;
+    size_t hit_count = 0;
+    size_t new_len = 0;
+
+    if (!text_ptr || !*text_ptr || !from || !to) {
+        return 0;
+    }
+
+    from_len = wcslen(from);
+    to_len = wcslen(to);
+    if (from_len == 0) {
+        return 0;
+    }
+
+    text = *text_ptr;
+    old_len = wcslen(text);
+    scan = text;
+    while ((hit = wcsstr(scan, from)) != NULL) {
+        hit_count++;
+        scan = hit + from_len;
+    }
+
+    if (hit_count == 0) {
+        return 0;
+    }
+
+    if (to_len >= from_len) {
+        size_t grow = to_len - from_len;
+        if (grow > 0 && hit_count > (((size_t)-1) - old_len - 1) / grow) {
+            return 0;
+        }
+        new_len = old_len + hit_count * grow;
+    } else {
+        new_len = old_len - hit_count * (from_len - to_len);
+    }
+
+    new_text = (wchar_t *)malloc((new_len + 1) * sizeof(wchar_t));
+    if (!new_text) {
+        return 0;
+    }
+
+    scan = text;
+    dst = new_text;
+    while ((hit = wcsstr(scan, from)) != NULL) {
+        size_t prefix_len = (size_t)(hit - scan);
+        if (prefix_len > 0) {
+            memcpy(dst, scan, prefix_len * sizeof(wchar_t));
+            dst += prefix_len;
+        }
+
+        if (to_len > 0) {
+            memcpy(dst, to, to_len * sizeof(wchar_t));
+            dst += to_len;
+        }
+
+        scan = hit + from_len;
+    }
+
+    wcscpy_s(dst, (size_t)(new_len - (size_t)(dst - new_text) + 1), scan);
+
+    free(*text_ptr);
+    *text_ptr = new_text;
+    return (int)hit_count;
+}
+
+static void apply_user_replace_rules(AppState *app, char **text_ptr) {
+    wchar_t *text_wide = NULL;
+    wchar_t *rules_copy = NULL;
+    wchar_t *context = NULL;
+    wchar_t *rule = NULL;
+    int replaced_total = 0;
+
+    if (!app || !text_ptr || !*text_ptr || app->replace_rules[0] == L'\0') {
+        return;
+    }
+
+    text_wide = utf8_to_wide_alloc(*text_ptr);
+    if (!text_wide) {
+        return;
+    }
+
+    rules_copy = _wcsdup(app->replace_rules);
+    if (!rules_copy) {
+        free(text_wide);
+        return;
+    }
+
+    rule = wcstok_s(rules_copy, L";；\r\n", &context);
+    while (rule) {
+        wchar_t *separator = NULL;
+        wchar_t *from = NULL;
+        wchar_t *to = NULL;
+        int sep_len = 0;
+
+        trim_wide_whitespace(rule);
+        if (rule[0] == L'\0') {
+            rule = wcstok_s(NULL, L";；\r\n", &context);
+            continue;
+        }
+
+        separator = wcsstr(rule, L"=>");
+        if (separator) {
+            sep_len = 2;
+        } else {
+            separator = wcsstr(rule, L"->");
+            if (separator) {
+                sep_len = 2;
+            } else {
+                separator = wcschr(rule, L'=');
+                if (separator) {
+                    sep_len = 1;
+                }
+            }
+        }
+
+        if (!separator) {
+            rule = wcstok_s(NULL, L";；\r\n", &context);
+            continue;
+        }
+
+        *separator = L'\0';
+        from = rule;
+        to = separator + sep_len;
+        trim_wide_whitespace(from);
+        trim_wide_whitespace(to);
+
+        if (from[0] == L'\0' || wcscmp(from, to) == 0) {
+            rule = wcstok_s(NULL, L";；\r\n", &context);
+            continue;
+        }
+
+        replaced_total += replace_all_wide(&text_wide, from, to);
+        rule = wcstok_s(NULL, L";；\r\n", &context);
+    }
+
+    if (replaced_total > 0) {
+        char *converted = NULL;
+        trim_wide_whitespace(text_wide);
+        converted = wide_to_utf8_alloc(text_wide);
+        if (converted) {
+            free(*text_ptr);
+            *text_ptr = converted;
+            app_log_line(app, "replace rules applied count=%d", replaced_total);
+        }
+    }
+
+    free(rules_copy);
+    free(text_wide);
+}
+
+static char *wide_to_utf8_alloc(const wchar_t *wide_text) {
+    int needed = 0;
+    char *utf8 = NULL;
+
+    if (!wide_text) {
+        return NULL;
+    }
+
+    needed = WideCharToMultiByte(CP_UTF8, 0, wide_text, -1, NULL, 0, NULL, NULL);
+    if (needed <= 0) {
+        return NULL;
+    }
+
+    utf8 = (char *)malloc((size_t)needed);
+    if (!utf8) {
+        return NULL;
+    }
+
+    if (WideCharToMultiByte(CP_UTF8, 0, wide_text, -1, utf8, needed, NULL, NULL) <= 0) {
+        free(utf8);
+        return NULL;
+    }
+
+    return utf8;
+}
+
+static wchar_t *utf8_to_wide_alloc(const char *utf8_text) {
+    int needed = 0;
+    wchar_t *wide = NULL;
+
+    if (!utf8_text) {
+        return NULL;
+    }
+
+    needed = MultiByteToWideChar(CP_UTF8, 0, utf8_text, -1, NULL, 0);
+    if (needed <= 0) {
+        return NULL;
+    }
+
+    wide = (wchar_t *)malloc((size_t)needed * sizeof(wchar_t));
+    if (!wide) {
+        return NULL;
+    }
+
+    if (MultiByteToWideChar(CP_UTF8, 0, utf8_text, -1, wide, needed) <= 0) {
+        free(wide);
+        return NULL;
+    }
+
+    return wide;
+}
+
+static BOOL is_checked(HWND checkbox) {
+    return SendMessageW(checkbox, BM_GETCHECK, 0, 0) == BST_CHECKED;
+}
+
+static void set_checked(HWND checkbox, BOOL checked) {
+    SendMessageW(checkbox, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
+}
+
+static BOOL is_our_window(const AppState *app, HWND hwnd) {
+    if (!app || !hwnd) {
+        return FALSE;
+    }
+
+    if (hwnd == app->main_hwnd || hwnd == app->float_hwnd) {
+        return TRUE;
+    }
+
+    if (app->main_hwnd && IsChild(app->main_hwnd, hwnd)) {
+        return TRUE;
+    }
+
+    if (app->float_hwnd && IsChild(app->float_hwnd, hwnd)) {
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static void set_status(AppState *app, const wchar_t *text) {
+    if (!app || !text) {
+        return;
+    }
+
+    if (app->status_label) {
+        SetWindowTextW(app->status_label, text);
+    }
+
+    if (app->float_status) {
+        SetWindowTextW(app->float_status, text);
+    }
+}
+
+static void append_hotkey_token(wchar_t *buffer, size_t buffer_len, const wchar_t *token) {
+    if (buffer[0] != L'\0') {
+        wcscat_s(buffer, buffer_len, L"+");
+    }
+    wcscat_s(buffer, buffer_len, token);
+}
+
+static void hotkey_vk_to_text(UINT vk, wchar_t *out, size_t out_len) {
+    if (vk >= 'A' && vk <= 'Z') {
+        out[0] = (wchar_t)vk;
+        out[1] = L'\0';
+        return;
+    }
+
+    if (vk >= '0' && vk <= '9') {
+        out[0] = (wchar_t)vk;
+        out[1] = L'\0';
+        return;
+    }
+
+    if (vk >= VK_F1 && vk <= VK_F24) {
+        swprintf(out, out_len, L"F%u", (unsigned)(vk - VK_F1 + 1));
+        return;
+    }
+
+    switch (vk) {
+    case VK_SPACE:
+        wcscpy_s(out, out_len, L"Space");
+        return;
+    case VK_RETURN:
+        wcscpy_s(out, out_len, L"Enter");
+        return;
+    case VK_TAB:
+        wcscpy_s(out, out_len, L"Tab");
+        return;
+    case VK_ESCAPE:
+        wcscpy_s(out, out_len, L"Esc");
+        return;
+    default:
+        swprintf(out, out_len, L"VK_%u", (unsigned)vk);
+        return;
+    }
+}
+
+static void format_hotkey_text(UINT mods, UINT vk, wchar_t *out, size_t out_len) {
+    wchar_t key_text[32];
+
+    out[0] = L'\0';
+
+    if (mods & MOD_CONTROL) {
+        append_hotkey_token(out, out_len, L"Ctrl");
+    }
+    if (mods & MOD_ALT) {
+        append_hotkey_token(out, out_len, L"Alt");
+    }
+    if (mods & MOD_SHIFT) {
+        append_hotkey_token(out, out_len, L"Shift");
+    }
+    if (mods & MOD_WIN) {
+        append_hotkey_token(out, out_len, L"Win");
+    }
+
+    hotkey_vk_to_text(vk, key_text, _countof(key_text));
+    append_hotkey_token(out, out_len, key_text);
+}
+
+static UINT parse_hotkey_key(const wchar_t *input) {
+    wchar_t key[32];
+    size_t len = 0;
+    size_t i = 0;
+
+    if (!input) {
+        return 0;
+    }
+
+    wcsncpy_s(key, _countof(key), input, _TRUNCATE);
+    trim_wide_whitespace(key);
+    len = wcslen(key);
+
+    if (len == 0) {
+        return 0;
+    }
+
+    for (i = 0; i < len; ++i) {
+        key[i] = towupper(key[i]);
+    }
+
+    if (len == 1) {
+        SHORT mapped = VkKeyScanW(key[0]);
+        if (mapped == -1) {
+            return 0;
+        }
+        return (UINT)LOBYTE(mapped);
+    }
+
+    if (key[0] == L'F' && len <= 3) {
+        int fn = _wtoi(key + 1);
+        if (fn >= 1 && fn <= 24) {
+            return VK_F1 + (UINT)(fn - 1);
+        }
+    }
+
+    if (wcscmp(key, L"SPACE") == 0) {
+        return VK_SPACE;
+    }
+    if (wcscmp(key, L"ENTER") == 0) {
+        return VK_RETURN;
+    }
+    if (wcscmp(key, L"TAB") == 0) {
+        return VK_TAB;
+    }
+    if (wcscmp(key, L"ESC") == 0 || wcscmp(key, L"ESCAPE") == 0) {
+        return VK_ESCAPE;
+    }
+
+    return 0;
+}
+
+static UINT read_modifiers(const AppState *app) {
+    UINT mods = 0;
+
+    if (is_checked(app->check_ctrl)) {
+        mods |= MOD_CONTROL;
+    }
+    if (is_checked(app->check_alt)) {
+        mods |= MOD_ALT;
+    }
+    if (is_checked(app->check_shift)) {
+        mods |= MOD_SHIFT;
+    }
+    if (is_checked(app->check_win)) {
+        mods |= MOD_WIN;
+    }
+
+    return mods;
+}
+
+static void update_hotkey_preview(AppState *app) {
+    wchar_t hotkey_text[64];
+    wchar_t line[96];
+
+    if (!app || !app->current_hotkey_label) {
+        return;
+    }
+
+    format_hotkey_text(app->hotkey_mods, app->hotkey_vk, hotkey_text, _countof(hotkey_text));
+    swprintf(line, _countof(line), L"当前快捷键：%ls", hotkey_text);
+    SetWindowTextW(app->current_hotkey_label, line);
+}
+
+static void update_float_button(AppState *app) {
+    const wchar_t *caption = L"录音";
+    BOOL enabled = TRUE;
+
+    if (!app || !app->float_button) {
+        return;
+    }
+
+    if (app->state == VOICE_RECORDING) {
+        caption = L"停止";
+    } else if (app->state == VOICE_TRANSCRIBING) {
+        caption = L"...";
+        enabled = FALSE;
+    }
+
+    SetWindowTextW(app->float_button, caption);
+    EnableWindow(app->float_button, enabled);
+}
+
+static DWORD clamp_setting(DWORD value, DWORD min_value, DWORD max_value) {
+    if (value < min_value) {
+        return min_value;
+    }
+    if (value > max_value) {
+        return max_value;
+    }
+    return value;
+}
+
+static DWORD read_edit_dword(HWND edit, DWORD fallback, DWORD min_value, DWORD max_value) {
+    wchar_t text[64];
+    wchar_t *end_ptr = NULL;
+    unsigned long parsed = 0;
+
+    if (!edit) {
+        return fallback;
+    }
+
+    GetWindowTextW(edit, text, _countof(text));
+    trim_wide_whitespace(text);
+    if (text[0] == L'\0') {
+        return clamp_setting(fallback, min_value, max_value);
+    }
+
+    parsed = wcstoul(text, &end_ptr, 10);
+    if (end_ptr == text) {
+        return clamp_setting(fallback, min_value, max_value);
+    }
+
+    return clamp_setting((DWORD)parsed, min_value, max_value);
+}
+
+static void write_dword_to_edit(HWND edit, DWORD value) {
+    wchar_t text[64];
+
+    if (!edit) {
+        return;
+    }
+
+    swprintf(text, _countof(text), L"%lu", (unsigned long)value);
+    SetWindowTextW(edit, text);
+}
+
+static void set_default_recorder_config(AppState *app) {
+    if (!app) {
+        return;
+    }
+
+    app->recorder_config.sample_rate = 16000;
+    app->recorder_config.channels = 1;
+    app->recorder_config.bits_per_sample = 16;
+    app->recorder_config.voice_threshold = 1400;
+    app->recorder_config.silence_timeout_ms = 1500;
+    app->recorder_config.min_record_ms = 900;
+    app->recorder_config.max_record_ms = 30000;
+}
+
+static void try_auto_fill_sherpa_defaults(AppState *app) {
+    wchar_t app_dir[MAX_PATH];
+    wchar_t parent_dir[MAX_PATH];
+    wchar_t grandparent_dir[MAX_PATH];
+    const wchar_t *roots[3];
+    int i;
+
+    if (!app || app->backend != ASR_BACKEND_SHERPA) {
+        return;
+    }
+
+    if (app->sherpa_exe[0] != L'\0' && app->sherpa_args[0] != L'\0') {
+        return;
+    }
+
+    app_dir[0] = L'\0';
+    parent_dir[0] = L'\0';
+    grandparent_dir[0] = L'\0';
+
+    extract_parent_dir(app->config_path, app_dir, _countof(app_dir));
+    if (app_dir[0] != L'\0') {
+        extract_parent_dir(app_dir, parent_dir, _countof(parent_dir));
+    }
+    if (parent_dir[0] != L'\0') {
+        extract_parent_dir(parent_dir, grandparent_dir, _countof(grandparent_dir));
+    }
+
+    roots[0] = app_dir;
+    roots[1] = parent_dir;
+    roots[2] = grandparent_dir;
+
+    for (i = 0; i < 3; ++i) {
+        wchar_t exe_path[MAX_PATH];
+        wchar_t tokens_path[MAX_PATH];
+        wchar_t model_path[MAX_PATH];
+
+        if (!roots[i] || roots[i][0] == L'\0') {
+            continue;
+        }
+
+        swprintf(exe_path,
+                 _countof(exe_path),
+                 L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-static-MT-Release-no-tts\\bin\\sherpa-onnx-offline.exe",
+                 roots[i]);
+        swprintf(tokens_path,
+                 _countof(tokens_path),
+                 L"%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt",
+                 roots[i]);
+        swprintf(model_path,
+                 _countof(model_path),
+                 L"%ls\\third_party\\sherpa\\models\\paraformer-zh\\model.int8.onnx",
+                 roots[i]);
+
+        if (!file_exists_non_dir(exe_path) || !file_exists_non_dir(tokens_path) || !file_exists_non_dir(model_path)) {
+            continue;
+        }
+
+        wcsncpy_s(app->sherpa_exe, _countof(app->sherpa_exe), exe_path, _TRUNCATE);
+        swprintf(app->sherpa_args,
+                 _countof(app->sherpa_args),
+                 L"--tokens=\"%ls\" --paraformer=\"%ls\" --num-threads=2 --decoding-method=greedy_search",
+                 tokens_path,
+                 model_path);
+
+        app_log_line(app, "auto-filled sherpa defaults from local third_party folder");
+        return;
+    }
+}
+
+static void sync_runtime_settings_to_ui(AppState *app) {
+    if (!app) {
+        return;
+    }
+
+    if (app->backend_combo) {
+        SendMessageW(app->backend_combo,
+                     CB_SETCURSEL,
+                     app->backend == ASR_BACKEND_SHERPA ? 1 : 0,
+                     0);
+    }
+
+    if (app->continuous_check) {
+        set_checked(app->continuous_check, app->continuous_mode);
+    }
+
+    if (app->auto_stop_check) {
+        set_checked(app->auto_stop_check, app->auto_stop_enabled);
+    }
+
+    if (app->sherpa_exe_edit) {
+        SetWindowTextW(app->sherpa_exe_edit, app->sherpa_exe);
+    }
+
+    if (app->sherpa_args_edit) {
+        SetWindowTextW(app->sherpa_args_edit, app->sherpa_args);
+    }
+
+    if (app->replace_rules_edit) {
+        SetWindowTextW(app->replace_rules_edit, app->replace_rules);
+    }
+
+    write_dword_to_edit(app->threshold_edit, (DWORD)app->recorder_config.voice_threshold);
+    write_dword_to_edit(app->silence_edit, app->recorder_config.silence_timeout_ms);
+    write_dword_to_edit(app->minrec_edit, app->recorder_config.min_record_ms);
+    write_dword_to_edit(app->maxrec_edit, app->recorder_config.max_record_ms);
+}
+
+static BOOL apply_runtime_settings_from_ui(AppState *app, BOOL persist) {
+    LRESULT selected_backend = 0;
+
+    if (!app) {
+        return FALSE;
+    }
+
+    if (app->backend_combo) {
+        selected_backend = SendMessageW(app->backend_combo, CB_GETCURSEL, 0, 0);
+        app->backend = selected_backend == 1 ? ASR_BACKEND_SHERPA : ASR_BACKEND_GROQ;
+    }
+
+    app->continuous_mode = app->continuous_check ? is_checked(app->continuous_check) : FALSE;
+    app->auto_stop_enabled = app->auto_stop_check ? is_checked(app->auto_stop_check) : TRUE;
+
+    if (app->sherpa_exe_edit) {
+        GetWindowTextW(app->sherpa_exe_edit, app->sherpa_exe, _countof(app->sherpa_exe));
+        trim_wide_whitespace(app->sherpa_exe);
+    }
+
+    if (app->sherpa_args_edit) {
+        GetWindowTextW(app->sherpa_args_edit, app->sherpa_args, _countof(app->sherpa_args));
+        trim_wide_whitespace(app->sherpa_args);
+    }
+
+    if (app->replace_rules_edit) {
+        GetWindowTextW(app->replace_rules_edit, app->replace_rules, _countof(app->replace_rules));
+        trim_wide_whitespace(app->replace_rules);
+    }
+
+    app->recorder_config.sample_rate = clamp_setting(app->recorder_config.sample_rate, 8000, 48000);
+    app->recorder_config.channels = 1;
+    app->recorder_config.bits_per_sample = 16;
+    app->recorder_config.voice_threshold = (SHORT)read_edit_dword(
+        app->threshold_edit,
+        (DWORD)app->recorder_config.voice_threshold,
+        120,
+        6000);
+    app->recorder_config.silence_timeout_ms = read_edit_dword(
+        app->silence_edit,
+        app->recorder_config.silence_timeout_ms,
+        400,
+        6000);
+    app->recorder_config.min_record_ms = read_edit_dword(
+        app->minrec_edit,
+        app->recorder_config.min_record_ms,
+        300,
+        5000);
+    app->recorder_config.max_record_ms = read_edit_dword(
+        app->maxrec_edit,
+        app->recorder_config.max_record_ms,
+        3000,
+        120000);
+
+    sync_runtime_settings_to_ui(app);
+
+    if (persist) {
+        save_settings(app);
+    }
+
+    return TRUE;
+}
+
+static void set_selfcheck_text(AppState *app, const wchar_t *text) {
+    if (app && app->selfcheck_label && text) {
+        SetWindowTextW(app->selfcheck_label, text);
+    }
+}
+
+static void append_report_line(wchar_t *report, size_t report_len, const wchar_t *line) {
+    if (!report || report_len == 0 || !line) {
+        return;
+    }
+
+    if (report[0] != L'\0') {
+        wcscat_s(report, report_len, L"\r\n");
+    }
+    wcscat_s(report, report_len, line);
+}
+
+static int validate_sherpa_path_option(const wchar_t *args,
+                                       const wchar_t *prefix,
+                                       const wchar_t *base_dir,
+                                       wchar_t *report,
+                                       size_t report_len) {
+    wchar_t value[1024];
+    wchar_t resolved[2048];
+    wchar_t line[1200];
+
+    if (!extract_option_value(args, prefix, value, _countof(value))) {
+        swprintf(line, _countof(line), L"缺少参数：%ls<路径>", prefix);
+        append_report_line(report, report_len, line);
+        return 1;
+    }
+
+    resolve_path_from_base(base_dir, value, resolved, _countof(resolved));
+    if (!file_exists_non_dir(resolved)) {
+        swprintf(line, _countof(line), L"文件不存在：%ls -> %ls", prefix, resolved);
+        append_report_line(report, report_len, line);
+        return 1;
+    }
+
+    return 0;
+}
+
+static BOOL build_self_check_report(AppState *app, wchar_t *report, size_t report_len) {
+    int issues = 0;
+    wchar_t hotkey_text[32];
+
+    if (!app || !report || report_len == 0) {
+        return FALSE;
+    }
+
+    report[0] = L'\0';
+    apply_runtime_settings_from_ui(app, FALSE);
+
+    GetWindowTextW(app->hotkey_edit, hotkey_text, _countof(hotkey_text));
+    if (parse_hotkey_key(hotkey_text) == 0) {
+        append_report_line(report, report_len, L"快捷键主键无效。");
+        issues++;
+    }
+    if (read_modifiers(app) == 0) {
+        append_report_line(report, report_len, L"至少勾选一个快捷键修饰键（Ctrl/Alt/Shift/Win）。");
+        issues++;
+    }
+
+    if (app->backend == ASR_BACKEND_GROQ) {
+        wchar_t api_key[512];
+        GetWindowTextW(app->api_edit, api_key, _countof(api_key));
+        trim_wide_whitespace(api_key);
+        if (api_key[0] == L'\0') {
+            append_report_line(report, report_len, L"Groq API Key 为空。");
+            issues++;
+        }
+    } else {
+        wchar_t sherpa_dir[MAX_PATH];
+        BOOL has_paraformer = FALSE;
+        BOOL has_whisper_encoder = FALSE;
+        BOOL has_whisper_decoder = FALSE;
+        wchar_t tmp[64];
+
+        if (app->sherpa_exe[0] == L'\0') {
+            append_report_line(report, report_len, L"Sherpa 可执行程序路径为空。");
+            issues++;
+        } else if (!file_exists_non_dir(app->sherpa_exe)) {
+            append_report_line(report, report_len, L"Sherpa 可执行程序不存在。");
+            issues++;
+        }
+
+        if (app->sherpa_args[0] == L'\0') {
+            append_report_line(report, report_len, L"Sherpa 参数为空。");
+            issues++;
+        }
+
+        extract_parent_dir(app->sherpa_exe, sherpa_dir, _countof(sherpa_dir));
+        has_paraformer = extract_option_value(app->sherpa_args, L"--paraformer=", tmp, _countof(tmp));
+        has_whisper_encoder = extract_option_value(app->sherpa_args, L"--whisper-encoder=", tmp, _countof(tmp));
+        has_whisper_decoder = extract_option_value(app->sherpa_args, L"--whisper-decoder=", tmp, _countof(tmp));
+
+        if (app->sherpa_args[0] != L'\0') {
+            issues += validate_sherpa_path_option(app->sherpa_args, L"--tokens=", sherpa_dir, report, report_len);
+
+            if (has_paraformer) {
+                issues += validate_sherpa_path_option(app->sherpa_args, L"--paraformer=", sherpa_dir, report, report_len);
+            } else if (has_whisper_encoder || has_whisper_decoder) {
+                issues += validate_sherpa_path_option(app->sherpa_args, L"--whisper-encoder=", sherpa_dir, report, report_len);
+                issues += validate_sherpa_path_option(app->sherpa_args, L"--whisper-decoder=", sherpa_dir, report, report_len);
+            } else {
+                issues += validate_sherpa_path_option(app->sherpa_args, L"--encoder=", sherpa_dir, report, report_len);
+                issues += validate_sherpa_path_option(app->sherpa_args, L"--decoder=", sherpa_dir, report, report_len);
+                issues += validate_sherpa_path_option(app->sherpa_args, L"--joiner=", sherpa_dir, report, report_len);
+            }
+        }
+    }
+
+    if (issues == 0) {
+        wcsncpy_s(report, report_len, L"自检通过：当前配置可用。", _TRUNCATE);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static void run_self_check(AppState *app, BOOL popup) {
+    wchar_t report[4096];
+    BOOL ok = build_self_check_report(app, report, _countof(report));
+
+    if (!app) {
+        return;
+    }
+
+    set_selfcheck_text(app, report);
+    if (ok) {
+        set_status(app, L"自检通过。");
+        app_log_line(app, "self-check ok");
+    } else {
+        set_status(app, L"自检发现问题。");
+        app_log_line(app, "self-check failed");
+    }
+
+    if (popup) {
+        MessageBoxW(app->main_hwnd,
+                    report,
+                    ok ? L"自检通过" : L"自检问题",
+                    MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+    }
+}
+
+static BOOL launch_sherpa_installer(AppState *app) {
+    wchar_t app_dir[MAX_PATH];
+    wchar_t parent_dir[MAX_PATH];
+    wchar_t grandparent_dir[MAX_PATH];
+    wchar_t script_path[2048];
+    wchar_t candidate[2048];
+    wchar_t params[4096];
+    const wchar_t *work_dir = NULL;
+    HINSTANCE shell_result;
+
+    if (!app) {
+        return FALSE;
+    }
+
+    apply_runtime_settings_from_ui(app, FALSE);
+    app->backend = ASR_BACKEND_SHERPA;
+    try_auto_fill_sherpa_defaults(app);
+    sync_runtime_settings_to_ui(app);
+
+    if (app->sherpa_exe[0] != L'\0' && app->sherpa_args[0] != L'\0') {
+        save_settings(app);
+        run_self_check(app, FALSE);
+        set_status(app, L"已自动应用本地 Sherpa 配置。");
+        return TRUE;
+    }
+
+    extract_parent_dir(app->config_path, app_dir, _countof(app_dir));
+    if (app_dir[0] == L'\0') {
+        set_status(app, L"无法定位程序目录。");
+        return FALSE;
+    }
+
+    parent_dir[0] = L'\0';
+    grandparent_dir[0] = L'\0';
+    extract_parent_dir(app_dir, parent_dir, _countof(parent_dir));
+    if (parent_dir[0] != L'\0') {
+        extract_parent_dir(parent_dir, grandparent_dir, _countof(grandparent_dir));
+    }
+
+    swprintf(script_path, _countof(script_path), L"%ls\\scripts\\install_sherpa.ps1", app_dir);
+    if (!file_exists_non_dir(script_path)) {
+        if (parent_dir[0] != L'\0') {
+            swprintf(candidate, _countof(candidate), L"%ls\\scripts\\install_sherpa.ps1", parent_dir);
+            if (file_exists_non_dir(candidate)) {
+                wcsncpy_s(script_path, _countof(script_path), candidate, _TRUNCATE);
+            }
+        }
+    }
+
+    if (!file_exists_non_dir(script_path)) {
+        if (grandparent_dir[0] != L'\0') {
+            swprintf(candidate, _countof(candidate), L"%ls\\scripts\\install_sherpa.ps1", grandparent_dir);
+            if (file_exists_non_dir(candidate)) {
+                wcsncpy_s(script_path, _countof(script_path), candidate, _TRUNCATE);
+            }
+        }
+    }
+
+    if (!file_exists_non_dir(script_path)) {
+        set_status(app, L"未找到安装脚本 scripts\\install_sherpa.ps1。");
+        return FALSE;
+    }
+
+    if (wcsncmp(script_path, app_dir, wcslen(app_dir)) == 0) {
+        work_dir = app_dir;
+    } else if (parent_dir[0] != L'\0' && wcsncmp(script_path, parent_dir, wcslen(parent_dir)) == 0) {
+        work_dir = parent_dir;
+    } else if (grandparent_dir[0] != L'\0' && wcsncmp(script_path, grandparent_dir, wcslen(grandparent_dir)) == 0) {
+        work_dir = grandparent_dir;
+    } else {
+        work_dir = app_dir;
+    }
+
+    swprintf(params,
+             _countof(params),
+             L"-NoProfile -ExecutionPolicy Bypass -File \"%ls\" -ConfigureIni -IniPath \"%ls\"",
+             script_path,
+             app->config_path);
+
+    shell_result = ShellExecuteW(app->main_hwnd,
+                                 L"open",
+                                 L"powershell.exe",
+                                 params,
+                                 work_dir,
+                                 SW_SHOWNORMAL);
+    if ((INT_PTR)shell_result <= 32) {
+        set_status(app, L"启动 Sherpa 安装脚本失败。");
+        return FALSE;
+    }
+
+    set_status(app, L"已在新窗口启动 Sherpa 安装脚本。");
+    app_log_line(app, "sherpa installer launched");
+    return TRUE;
+}
+
+static void save_settings(AppState *app) {
+    wchar_t api_key[512];
+    wchar_t key_text[32];
+    wchar_t replace_rules[2048];
+    wchar_t content[8192];
+    UINT mods = 0;
+    int bytes_needed = 0;
+    char *mb_content = NULL;
+    HANDLE file_handle = INVALID_HANDLE_VALUE;
+    DWORD written = 0;
+
+    if (!app) {
+        return;
+    }
+
+    replace_rules[0] = L'\0';
+    GetWindowTextW(app->api_edit, api_key, _countof(api_key));
+    GetWindowTextW(app->hotkey_edit, key_text, _countof(key_text));
+    if (app->replace_rules_edit) {
+        GetWindowTextW(app->replace_rules_edit, replace_rules, _countof(replace_rules));
+    } else {
+        wcsncpy_s(replace_rules, _countof(replace_rules), app->replace_rules, _TRUNCATE);
+    }
+    wcsncpy_s(app->replace_rules, _countof(app->replace_rules), replace_rules, _TRUNCATE);
+    trim_wide_whitespace(app->replace_rules);
+
+    mods = read_modifiers(app);
+    if (mods == 0) {
+        mods = app->hotkey_mods ? app->hotkey_mods : (MOD_CONTROL | MOD_ALT);
+    }
+
+    swprintf(content,
+             _countof(content),
+             L"[settings]\r\n"
+             L"api_key=%ls\r\n"
+             L"hotkey_key=%ls\r\n"
+             L"hotkey_mods=%u\r\n"
+             L"backend=%ls\r\n"
+             L"sherpa_exe=%ls\r\n"
+             L"sherpa_args=%ls\r\n"
+             L"replace_rules=%ls\r\n"
+             L"continuous_mode=%u\r\n"
+             L"auto_stop=%u\r\n"
+             L"sample_rate=%u\r\n"
+             L"voice_threshold=%d\r\n"
+             L"silence_timeout_ms=%u\r\n"
+             L"min_record_ms=%u\r\n"
+             L"max_record_ms=%u\r\n",
+             api_key,
+             key_text,
+             (unsigned)mods,
+             asr_backend_name(app->backend),
+             app->sherpa_exe,
+             app->sherpa_args,
+             app->replace_rules,
+             app->continuous_mode ? 1u : 0u,
+             app->auto_stop_enabled ? 1u : 0u,
+             (unsigned)app->recorder_config.sample_rate,
+             (int)app->recorder_config.voice_threshold,
+             (unsigned)app->recorder_config.silence_timeout_ms,
+             (unsigned)app->recorder_config.min_record_ms,
+             (unsigned)app->recorder_config.max_record_ms);
+
+    bytes_needed = WideCharToMultiByte(CP_ACP, 0, content, -1, NULL, 0, NULL, NULL);
+    if (bytes_needed <= 0) {
+        return;
+    }
+
+    mb_content = (char *)malloc((size_t)bytes_needed);
+    if (!mb_content) {
+        return;
+    }
+
+    if (WideCharToMultiByte(CP_ACP, 0, content, -1, mb_content, bytes_needed, NULL, NULL) <= 0) {
+        free(mb_content);
+        return;
+    }
+
+    file_handle = CreateFileW(app->config_path,
+                              GENERIC_WRITE,
+                              FILE_SHARE_READ,
+                              NULL,
+                              CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL,
+                              NULL);
+    if (file_handle == INVALID_HANDLE_VALUE) {
+        free(mb_content);
+        return;
+    }
+
+    WriteFile(file_handle, mb_content, (DWORD)(bytes_needed - 1), &written, NULL);
+    CloseHandle(file_handle);
+    free(mb_content);
+}
+
+static void load_settings(AppState *app) {
+    wchar_t api_key[512] = L"";
+    wchar_t key_text[32] = L"R";
+    wchar_t mods_text[32] = L"3";
+    wchar_t backend_name[32] = L"groq";
+    wchar_t sample_rate_text[32] = L"16000";
+    wchar_t voice_threshold_text[32] = L"1400";
+    wchar_t silence_timeout_text[32] = L"1500";
+    wchar_t min_record_text[32] = L"900";
+    wchar_t max_record_text[32] = L"30000";
+    wchar_t replace_rules_text[2048] = L"";
+    wchar_t continuous_mode_text[16] = L"0";
+    wchar_t auto_stop_text[16] = L"1";
+    UINT mods = 0;
+
+    if (!app) {
+        return;
+    }
+
+    app->backend = ASR_BACKEND_GROQ;
+    app->continuous_mode = FALSE;
+    app->auto_stop_enabled = TRUE;
+    app->stop_after_current = FALSE;
+    app->sherpa_exe[0] = L'\0';
+    app->sherpa_args[0] = L'\0';
+    app->replace_rules[0] = L'\0';
+    set_default_recorder_config(app);
+
+    GetPrivateProfileStringW(L"settings", L"api_key", L"", api_key, _countof(api_key), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"hotkey_key", L"R", key_text, _countof(key_text), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"hotkey_mods", L"3", mods_text, _countof(mods_text), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"backend", L"groq", backend_name, _countof(backend_name), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"sherpa_exe", L"", app->sherpa_exe, _countof(app->sherpa_exe), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"sherpa_args", L"", app->sherpa_args, _countof(app->sherpa_args), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"replace_rules", L"", replace_rules_text, _countof(replace_rules_text), app->config_path);
+
+    GetPrivateProfileStringW(L"settings", L"continuous_mode", L"0", continuous_mode_text, _countof(continuous_mode_text), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"auto_stop", L"1", auto_stop_text, _countof(auto_stop_text), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"sample_rate", L"16000", sample_rate_text, _countof(sample_rate_text), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"voice_threshold", L"1400", voice_threshold_text, _countof(voice_threshold_text), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"silence_timeout_ms", L"1500", silence_timeout_text, _countof(silence_timeout_text), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"min_record_ms", L"900", min_record_text, _countof(min_record_text), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"max_record_ms", L"30000", max_record_text, _countof(max_record_text), app->config_path);
+
+    mods = (UINT)wcstoul(mods_text, NULL, 10);
+    if (mods == 0) {
+        mods = MOD_CONTROL | MOD_ALT;
+    }
+
+    app->backend = asr_parse_backend_name(backend_name);
+    app->continuous_mode = wcstoul(continuous_mode_text, NULL, 10) ? TRUE : FALSE;
+    app->auto_stop_enabled = wcstoul(auto_stop_text, NULL, 10) ? TRUE : FALSE;
+    wcsncpy_s(app->replace_rules, _countof(app->replace_rules), replace_rules_text, _TRUNCATE);
+    trim_wide_whitespace(app->replace_rules);
+
+    app->recorder_config.sample_rate = clamp_setting((DWORD)wcstoul(sample_rate_text, NULL, 10), 8000, 48000);
+    app->recorder_config.channels = 1;
+    app->recorder_config.bits_per_sample = 16;
+    app->recorder_config.voice_threshold = (SHORT)clamp_setting((DWORD)wcstoul(voice_threshold_text, NULL, 10), 120, 6000);
+    app->recorder_config.silence_timeout_ms = clamp_setting((DWORD)wcstoul(silence_timeout_text, NULL, 10), 400, 6000);
+    app->recorder_config.min_record_ms = clamp_setting((DWORD)wcstoul(min_record_text, NULL, 10), 300, 5000);
+    app->recorder_config.max_record_ms = clamp_setting((DWORD)wcstoul(max_record_text, NULL, 10), 3000, 120000);
+
+    try_auto_fill_sherpa_defaults(app);
+
+    SetWindowTextW(app->api_edit, api_key);
+    SetWindowTextW(app->hotkey_edit, key_text);
+    set_checked(app->check_ctrl, (mods & MOD_CONTROL) != 0);
+    set_checked(app->check_alt, (mods & MOD_ALT) != 0);
+    set_checked(app->check_shift, (mods & MOD_SHIFT) != 0);
+    set_checked(app->check_win, (mods & MOD_WIN) != 0);
+    sync_runtime_settings_to_ui(app);
+    save_settings(app);
+
+    app_log_line(app,
+                 "settings loaded backend=%s continuous=%u auto_stop=%u threshold=%d silence=%lu min=%lu max=%lu",
+                 app->backend == ASR_BACKEND_SHERPA ? "sherpa" : "groq",
+                 app->continuous_mode ? 1u : 0u,
+                 app->auto_stop_enabled ? 1u : 0u,
+                 (int)app->recorder_config.voice_threshold,
+                 (unsigned long)app->recorder_config.silence_timeout_ms,
+                 (unsigned long)app->recorder_config.min_record_ms,
+                 (unsigned long)app->recorder_config.max_record_ms);
+}
+
+static BOOL register_record_hotkey(AppState *app, UINT mods, UINT vk) {
+    if (!app) {
+        return FALSE;
+    }
+
+    if (app->hotkey_registered) {
+        UnregisterHotKey(app->main_hwnd, HOTKEY_RECORD_ID);
+        app->hotkey_registered = FALSE;
+    }
+
+    if (!RegisterHotKey(app->main_hwnd, HOTKEY_RECORD_ID, mods, vk)) {
+        return FALSE;
+    }
+
+    app->hotkey_mods = mods;
+    app->hotkey_vk = vk;
+    app->hotkey_registered = TRUE;
+    update_hotkey_preview(app);
+    return TRUE;
+}
+
+static BOOL apply_hotkey_from_ui(AppState *app, BOOL persist) {
+    wchar_t key_text[32];
+    UINT mods = 0;
+    UINT vk = 0;
+
+    if (!app) {
+        return FALSE;
+    }
+
+    mods = read_modifiers(app);
+    if (mods == 0) {
+        set_status(app, L"请至少选择一个修饰键（Ctrl/Alt/Shift/Win）。");
+        return FALSE;
+    }
+
+    GetWindowTextW(app->hotkey_edit, key_text, _countof(key_text));
+    vk = parse_hotkey_key(key_text);
+    if (vk == 0) {
+        set_status(app, L"快捷键无效，请使用 A-Z、0-9、F1-F24、Enter 或 Space。");
+        return FALSE;
+    }
+
+    if (!register_record_hotkey(app, mods, vk)) {
+        set_status(app, L"注册快捷键失败，可能被其它程序占用。");
+        return FALSE;
+    }
+
+    if (persist) {
+        save_settings(app);
+    }
+
+    set_status(app, L"快捷键设置成功。");
+    return TRUE;
+}
+
+static BOOL add_tray_icon(AppState *app) {
+    NOTIFYICONDATAW nid;
+
+    if (!app || !app->main_hwnd) {
+        return FALSE;
+    }
+
+    ZeroMemory(&nid, sizeof(nid));
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = app->main_hwnd;
+    nid.uID = TRAY_ICON_ID;
+    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    nid.uCallbackMessage = WMAPP_TRAYICON;
+    nid.hIcon = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
+    wcscpy_s(nid.szTip, _countof(nid.szTip), L"语音输入助手");
+
+    if (!Shell_NotifyIconW(NIM_ADD, &nid)) {
+        return FALSE;
+    }
+
+    nid.uVersion = NOTIFYICON_VERSION_4;
+    Shell_NotifyIconW(NIM_SETVERSION, &nid);
+    app->tray_added = TRUE;
+    return TRUE;
+}
+
+static void remove_tray_icon(AppState *app) {
+    NOTIFYICONDATAW nid;
+
+    if (!app || !app->tray_added) {
+        return;
+    }
+
+    ZeroMemory(&nid, sizeof(nid));
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = app->main_hwnd;
+    nid.uID = TRAY_ICON_ID;
+    Shell_NotifyIconW(NIM_DELETE, &nid);
+    app->tray_added = FALSE;
+}
+
+static void show_main_window(AppState *app) {
+    if (!app || !app->main_hwnd) {
+        return;
+    }
+
+    ShowWindow(app->main_hwnd, SW_SHOW);
+    ShowWindow(app->main_hwnd, SW_RESTORE);
+    SetForegroundWindow(app->main_hwnd);
+}
+
+static void show_tray_menu(AppState *app) {
+    HMENU menu = NULL;
+    POINT point;
+
+    if (!app || !app->main_hwnd) {
+        return;
+    }
+
+    if (!GetCursorPos(&point)) {
+        return;
+    }
+
+    menu = CreatePopupMenu();
+    if (!menu) {
+        return;
+    }
+
+    AppendMenuW(menu, MF_STRING, ID_TRAY_OPEN, L"打开设置");
+    AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, L"退出程序");
+    SetForegroundWindow(app->main_hwnd);
+    TrackPopupMenu(menu, TPM_RIGHTBUTTON, point.x, point.y, 0, app->main_hwnd, NULL);
+    DestroyMenu(menu);
+}
+
+static void update_floating_position(AppState *app) {
+    HWND foreground = NULL;
+    DWORD thread_id = 0;
+    GUITHREADINFO thread_info;
+    HWND focus = NULL;
+    RECT anchor;
+    RECT work_area;
+    BOOL has_anchor = FALSE;
+    int x = 0;
+    int y = 0;
+    const int width = 200;
+    const int height = 44;
+
+    if (!app || !app->float_hwnd) {
+        return;
+    }
+
+    foreground = GetForegroundWindow();
+    if (!foreground || is_our_window(app, foreground)) {
+        ShowWindow(app->float_hwnd, SW_HIDE);
+        return;
+    }
+
+    ZeroMemory(&thread_info, sizeof(thread_info));
+    thread_info.cbSize = sizeof(thread_info);
+    thread_id = GetWindowThreadProcessId(foreground, NULL);
+
+    if (thread_id != 0 && GetGUIThreadInfo(thread_id, &thread_info)) {
+        focus = thread_info.hwndFocus ? thread_info.hwndFocus : foreground;
+
+        if (is_our_window(app, focus)) {
+            ShowWindow(app->float_hwnd, SW_HIDE);
+            return;
+        }
+
+        if (IsWindow(focus)) {
+            has_anchor = GetWindowRect(focus, &anchor);
+            if (has_anchor) {
+                HWND root = GetAncestor(focus, GA_ROOT);
+                app->follow_target_window = root ? root : foreground;
+            }
+        }
+    }
+
+    if (!has_anchor) {
+        app->follow_target_window = foreground;
+        has_anchor = GetWindowRect(foreground, &anchor);
+    }
+
+    if (!has_anchor) {
+        return;
+    }
+
+    x = anchor.right + 8;
+    y = anchor.top;
+
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work_area, 0)) {
+        work_area.left = 0;
+        work_area.top = 0;
+        work_area.right = GetSystemMetrics(SM_CXSCREEN);
+        work_area.bottom = GetSystemMetrics(SM_CYSCREEN);
+    }
+
+    if (x + width > work_area.right) {
+        x = anchor.left - width - 8;
+    }
+    if (x < work_area.left) {
+        x = work_area.left;
+    }
+
+    if (y + height > work_area.bottom) {
+        y = work_area.bottom - height;
+    }
+    if (y < work_area.top) {
+        y = work_area.top;
+    }
+
+    SetWindowPos(app->float_hwnd, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
+static DWORD WINAPI transcribe_thread_proc(LPVOID param) {
+    TranscribeTask *task = (TranscribeTask *)param;
+    TranscribeResult *result = NULL;
+    HWND notify_hwnd = NULL;
+
+    if (!task) {
+        return 0;
+    }
+
+    notify_hwnd = task->notify_hwnd;
+    result = (TranscribeResult *)calloc(1, sizeof(TranscribeResult));
+    if (result) {
+        result->target_window = task->target_window;
+        if (task->backend == ASR_BACKEND_SHERPA) {
+            result->success = sherpa_transcribe_wav_cli(task->wav_path,
+                                                        task->sherpa_exe,
+                                                        task->sherpa_args,
+                                                        &result->text,
+                                                        &result->error_text);
+        } else {
+            result->success = groq_transcribe_wav(task->wav_path,
+                                                  task->api_key,
+                                                  &result->text,
+                                                  &result->error_text);
+        }
+    }
+
+    free(task->api_key);
+    free(task);
+
+    if (notify_hwnd) {
+        PostMessageW(notify_hwnd, WMAPP_TRANSCRIBE_DONE, 0, (LPARAM)result);
+    } else if (result) {
+        if (result->text) {
+            groq_free_text(result->text);
+        }
+        if (result->error_text) {
+            groq_free_text(result->error_text);
+        }
+        free(result);
+    }
+
+    return 0;
+}
+
+static BOOL start_transcribing(AppState *app, HWND target_window) {
+    wchar_t api_key_wide[512];
+    char *api_key_utf8 = NULL;
+    TranscribeTask *task = NULL;
+    HANDLE worker = NULL;
+
+    if (!app) {
+        return FALSE;
+    }
+
+    if (app->backend == ASR_BACKEND_GROQ) {
+        GetWindowTextW(app->api_edit, api_key_wide, _countof(api_key_wide));
+        trim_wide_whitespace(api_key_wide);
+        if (api_key_wide[0] == L'\0') {
+            set_status(app, L"请先填写 Groq API Key。");
+            return FALSE;
+        }
+
+        api_key_utf8 = wide_to_utf8_alloc(api_key_wide);
+        if (!api_key_utf8) {
+            set_status(app, L"读取 API Key 失败。");
+            return FALSE;
+        }
+    }
+
+    task = (TranscribeTask *)calloc(1, sizeof(TranscribeTask));
+    if (!task) {
+        free(api_key_utf8);
+        set_status(app, L"内存不足。");
+        return FALSE;
+    }
+
+    task->notify_hwnd = app->main_hwnd;
+    wcscpy_s(task->wav_path, _countof(task->wav_path), app->wav_path);
+    task->api_key = api_key_utf8;
+    task->backend = app->backend;
+    wcscpy_s(task->sherpa_exe, _countof(task->sherpa_exe), app->sherpa_exe);
+    wcscpy_s(task->sherpa_args, _countof(task->sherpa_args), app->sherpa_args);
+    task->target_window = target_window;
+
+    worker = CreateThread(NULL, 0, transcribe_thread_proc, task, 0, NULL);
+    if (!worker) {
+        free(task->api_key);
+        free(task);
+        set_status(app, L"启动识别线程失败。");
+        return FALSE;
+    }
+
+    if (app->worker_thread) {
+        CloseHandle(app->worker_thread);
+    }
+    app->worker_thread = worker;
+    app->state = VOICE_TRANSCRIBING;
+    if (app->backend == ASR_BACKEND_SHERPA) {
+        set_status(app, L"本地识别中（Sherpa）...");
+    } else {
+        set_status(app, L"云端识别中（Groq）...");
+    }
+    app_log_line(app,
+                 "transcribe start backend=%s",
+                 app->backend == ASR_BACKEND_SHERPA ? "sherpa" : "groq");
+    update_float_button(app);
+    return TRUE;
+}
+
+static BOOL start_recording_session(AppState *app, HWND target_hint) {
+    HWND target = target_hint;
+
+    if (!app) {
+        return FALSE;
+    }
+
+    if (!target || is_our_window(app, target)) {
+        target = app->follow_target_window;
+    }
+
+    if (audio_start_recording(&app->recorder_config)) {
+        app->target_window = target;
+        app->state = VOICE_RECORDING;
+        set_status(app, L"录音中...");
+        update_float_button(app);
+        app_log_line(app, "recording start target=0x%p", target);
+        return TRUE;
+    }
+
+    set_status(app, L"启动录音失败。");
+    app_log_line(app, "recording start failed");
+    return FALSE;
+}
+
+static BOOL stop_recording_and_transcribe(AppState *app, BOOL auto_stop) {
+    if (!app) {
+        return FALSE;
+    }
+
+    if (!auto_stop) {
+        app->stop_after_current = TRUE;
+    }
+
+    if (!audio_stop_and_save(app->wav_path)) {
+        app->state = VOICE_IDLE;
+        set_status(app, L"录音保存失败。");
+        update_float_button(app);
+        app_log_line(app, "recording stop/save failed");
+        return FALSE;
+    }
+
+    app_log_line(app,
+                 "recording stop saved reason=%s",
+                 auto_stop ? "auto-silence" : "manual");
+
+    if (!start_transcribing(app, app->target_window)) {
+        app->state = VOICE_IDLE;
+        update_float_button(app);
+        app_log_line(app, "transcribe start failed");
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static void poll_recording_runtime(AppState *app) {
+    AudioRuntimeStatus status;
+
+    if (!app || app->state != VOICE_RECORDING) {
+        return;
+    }
+
+    if (!app->auto_stop_enabled) {
+        return;
+    }
+
+    if (!audio_get_runtime_status(&status)) {
+        return;
+    }
+
+    if (status.should_auto_stop) {
+        if (!status.had_voice) {
+            audio_abort();
+            app->state = VOICE_IDLE;
+            update_float_button(app);
+            set_status(app, L"未检测到清晰语音，本次未发送。");
+            app_log_line(app,
+                         "auto-stop dropped(no-voice) duration_ms=%lu silence_ms=%lu peak=%lu bytes=%lu",
+                         (unsigned long)status.record_duration_ms,
+                         (unsigned long)status.ms_since_voice,
+                         (unsigned long)status.peak_level,
+                         (unsigned long)status.recorded_bytes);
+
+            if (app->continuous_mode) {
+                app->continuous_mode = FALSE;
+                if (app->continuous_check) {
+                    set_checked(app->continuous_check, FALSE);
+                }
+                save_settings(app);
+                set_status(app, L"未检测到清晰语音，已暂停自动监听。");
+                app_log_line(app, "continuous mode disabled after no-voice auto-stop");
+            }
+            return;
+        }
+
+        set_status(app, L"检测到静音，开始识别...");
+        app_log_line(app,
+                     "auto-stop duration_ms=%lu silence_ms=%lu peak=%lu bytes=%lu",
+                     (unsigned long)status.record_duration_ms,
+                     (unsigned long)status.ms_since_voice,
+                     (unsigned long)status.peak_level,
+                     (unsigned long)status.recorded_bytes);
+        stop_recording_and_transcribe(app, TRUE);
+    }
+}
+
+static void toggle_recording(AppState *app, HWND target_hint) {
+    if (!app) {
+        return;
+    }
+
+    if (app->state == VOICE_TRANSCRIBING) {
+        app->stop_after_current = TRUE;
+        if (app->continuous_mode) {
+            app->continuous_mode = FALSE;
+            if (app->continuous_check) {
+                set_checked(app->continuous_check, FALSE);
+            }
+            save_settings(app);
+        }
+        set_status(app, L"已请求停止：当前识别完成后不再自动继续。");
+        app_log_line(app, "stop requested while transcribing");
+        return;
+    }
+
+    if (app->state == VOICE_IDLE) {
+        app->stop_after_current = FALSE;
+        start_recording_session(app, target_hint);
+        return;
+    }
+
+    stop_recording_and_transcribe(app, FALSE);
+}
+
+static void on_transcribe_done(AppState *app, TranscribeResult *result) {
+    BOOL should_restart = FALSE;
+
+    if (!app) {
+        return;
+    }
+
+    should_restart = app->continuous_mode && !app->exit_requested && !app->stop_after_current;
+
+    app->state = VOICE_IDLE;
+    update_float_button(app);
+
+    if (!result) {
+        set_status(app, L"识别失败。");
+        return;
+    }
+
+    if (!result->success || !result->text) {
+        if (result->error_text && result->error_text[0] != '\0') {
+            wchar_t *error_wide = utf8_to_wide_alloc(result->error_text);
+            if (error_wide) {
+                wchar_t short_error[160];
+                wcsncpy_s(short_error, _countof(short_error), error_wide, _TRUNCATE);
+                set_status(app, short_error);
+                free(error_wide);
+            } else {
+                set_status(app, L"识别失败。");
+            }
+            app_log_line(app, "transcribe failed: %s", result->error_text);
+        } else {
+            set_status(app, L"识别失败。");
+            app_log_line(app, "transcribe failed with no error text");
+        }
+    } else {
+        trim_ascii_whitespace(result->text);
+        if (result->text[0] == '\0') {
+            set_status(app, L"未识别到有效语音。");
+            app_log_line(app, "transcribe success but empty text");
+        } else {
+            apply_user_replace_rules(app, &result->text);
+            trim_ascii_whitespace(result->text);
+            if (result->text[0] == '\0') {
+                set_status(app, L"术语替换后文本为空，本次未发送。");
+                app_log_line(app, "transcribe dropped after replace rules");
+            } else {
+                apply_simple_sherpa_punctuation(app, &result->text);
+                HWND target = result->target_window;
+
+                if (!target || !IsWindow(target) || is_our_window(app, target)) {
+                    target = app->follow_target_window;
+                }
+
+                if (target && IsWindow(target)) {
+                    SetForegroundWindow(target);
+                    Sleep(40);
+                }
+
+                if (injector_paste_utf8(result->text)) {
+                    set_status(app, L"已粘贴到目标输入框。");
+                    app_log_line(app, "paste success text_len=%u", (unsigned)strlen(result->text));
+                } else {
+                    set_status(app, L"粘贴失败，请保持焦点在目标输入框。");
+                    app_log_line(app, "paste failed text_len=%u", (unsigned)strlen(result->text));
+                }
+            }
+        }
+
+    }
+
+    if (result->text) {
+        groq_free_text(result->text);
+    }
+    if (result->error_text) {
+        groq_free_text(result->error_text);
+    }
+    free(result);
+
+    if (app->worker_thread) {
+        CloseHandle(app->worker_thread);
+        app->worker_thread = NULL;
+    }
+
+    if (app->stop_after_current) {
+        app_log_line(app, "stop-after-current consumed");
+    }
+    app->stop_after_current = FALSE;
+
+    if (should_restart && app->state == VOICE_IDLE) {
+        start_recording_session(app, app->follow_target_window);
+    }
+}
+
+static void apply_font(HWND control, HFONT font) {
+    if (control && font) {
+        SendMessageW(control, WM_SETFONT, (WPARAM)font, TRUE);
+    }
+}
+
+static void create_main_controls(AppState *app) {
+    HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    HWND label = NULL;
+    HWND button = NULL;
+
+    label = CreateWindowW(L"STATIC", L"Groq API Key：", WS_CHILD | WS_VISIBLE,
+                          20, 16, 120, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+
+    app->api_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                    WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_PASSWORD,
+                                    140, 12, 640, 24, app->main_hwnd,
+                                    (HMENU)(INT_PTR)IDC_EDIT_API, app->instance, NULL);
+    apply_font(app->api_edit, font);
+
+    label = CreateWindowW(L"STATIC", L"识别后端：", WS_CHILD | WS_VISIBLE,
+                          20, 50, 100, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+
+    app->backend_combo = CreateWindowW(L"COMBOBOX", L"",
+                                       WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+                                       140, 46, 170, 200, app->main_hwnd,
+                                       (HMENU)(INT_PTR)IDC_COMBO_BACKEND, app->instance, NULL);
+    apply_font(app->backend_combo, font);
+    SendMessageW(app->backend_combo, CB_ADDSTRING, 0, (LPARAM)L"Groq 云端");
+    SendMessageW(app->backend_combo, CB_ADDSTRING, 0, (LPARAM)L"Sherpa 本地");
+
+    app->continuous_check = CreateWindowW(L"BUTTON",
+                                          L"自动监听（识别完自动继续）",
+                                          WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                          330, 48, 260, 20, app->main_hwnd,
+                                          (HMENU)(INT_PTR)IDC_CHECK_CONTINUOUS,
+                                          app->instance,
+                                          NULL);
+    apply_font(app->continuous_check, font);
+
+    app->auto_stop_check = CreateWindowW(L"BUTTON",
+                                         L"自动静音停录（关闭后需按快捷键结束）",
+                                         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                         590, 48, 250, 20, app->main_hwnd,
+                                         (HMENU)(INT_PTR)IDC_CHECK_AUTO_STOP,
+                                         app->instance,
+                                         NULL);
+    apply_font(app->auto_stop_check, font);
+
+    label = CreateWindowW(L"STATIC", L"Sherpa 程序：", WS_CHILD | WS_VISIBLE,
+                          20, 82, 110, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+
+    app->sherpa_exe_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
+                                           L"EDIT",
+                                           L"",
+                                           WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                           140,
+                                           78,
+                                           640,
+                                           24,
+                                           app->main_hwnd,
+                                           (HMENU)(INT_PTR)IDC_EDIT_SHERPA_EXE,
+                                           app->instance,
+                                           NULL);
+    apply_font(app->sherpa_exe_edit, font);
+
+    label = CreateWindowW(L"STATIC", L"Sherpa 参数：", WS_CHILD | WS_VISIBLE,
+                          20, 114, 110, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+
+    app->sherpa_args_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
+                                            L"EDIT",
+                                            L"",
+                                            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                            140,
+                                            110,
+                                            640,
+                                            24,
+                                            app->main_hwnd,
+                                            (HMENU)(INT_PTR)IDC_EDIT_SHERPA_ARGS,
+                                            app->instance,
+                                            NULL);
+    apply_font(app->sherpa_args_edit, font);
+
+    label = CreateWindowW(L"STATIC", L"静音判停参数：", WS_CHILD | WS_VISIBLE,
+                          20, 150, 120, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+
+    label = CreateWindowW(L"STATIC", L"音量阈值", WS_CHILD | WS_VISIBLE,
+                          140, 150, 70, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+
+    app->threshold_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
+                                          L"EDIT",
+                                          L"1400",
+                                          WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                          210,
+                                          146,
+                                          80,
+                                          24,
+                                          app->main_hwnd,
+                                          (HMENU)(INT_PTR)IDC_EDIT_THRESHOLD,
+                                          app->instance,
+                                          NULL);
+    apply_font(app->threshold_edit, font);
+
+    label = CreateWindowW(L"STATIC", L"静音时长(ms)", WS_CHILD | WS_VISIBLE,
+                          310, 150, 90, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+
+    app->silence_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
+                                        L"EDIT",
+                                        L"1500",
+                                        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                        400,
+                                        146,
+                                        80,
+                                        24,
+                                        app->main_hwnd,
+                                        (HMENU)(INT_PTR)IDC_EDIT_SILENCE,
+                                        app->instance,
+                                        NULL);
+    apply_font(app->silence_edit, font);
+
+    label = CreateWindowW(L"STATIC", L"最短录音(ms)", WS_CHILD | WS_VISIBLE,
+                          500, 150, 90, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+
+    app->minrec_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
+                                       L"EDIT",
+                                       L"900",
+                                       WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                       590,
+                                       146,
+                                       80,
+                                       24,
+                                       app->main_hwnd,
+                                       (HMENU)(INT_PTR)IDC_EDIT_MINREC,
+                                       app->instance,
+                                       NULL);
+    apply_font(app->minrec_edit, font);
+
+    label = CreateWindowW(L"STATIC", L"最长录音(ms)", WS_CHILD | WS_VISIBLE,
+                          680, 150, 90, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+
+    app->maxrec_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
+                                       L"EDIT",
+                                       L"30000",
+                                       WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                       770,
+                                       146,
+                                       70,
+                                       24,
+                                       app->main_hwnd,
+                                       (HMENU)(INT_PTR)IDC_EDIT_MAXREC,
+                                       app->instance,
+                                       NULL);
+    apply_font(app->maxrec_edit, font);
+
+    label = CreateWindowW(L"STATIC", L"快捷键（A-Z/0-9/F1-F24）：", WS_CHILD | WS_VISIBLE,
+                          20, 188, 220, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+
+    app->hotkey_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"R",
+                                       WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                       250, 184, 80, 24, app->main_hwnd,
+                                       (HMENU)(INT_PTR)IDC_EDIT_HOTKEY, app->instance, NULL);
+    apply_font(app->hotkey_edit, font);
+
+    app->check_ctrl = CreateWindowW(L"BUTTON", L"Ctrl", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                    20, 220, 70, 20, app->main_hwnd,
+                                    (HMENU)(INT_PTR)IDC_CHECK_CTRL, app->instance, NULL);
+    apply_font(app->check_ctrl, font);
+
+    app->check_alt = CreateWindowW(L"BUTTON", L"Alt", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                   95, 220, 70, 20, app->main_hwnd,
+                                   (HMENU)(INT_PTR)IDC_CHECK_ALT, app->instance, NULL);
+    apply_font(app->check_alt, font);
+
+    app->check_shift = CreateWindowW(L"BUTTON", L"Shift", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                     170, 220, 70, 20, app->main_hwnd,
+                                     (HMENU)(INT_PTR)IDC_CHECK_SHIFT, app->instance, NULL);
+    apply_font(app->check_shift, font);
+
+    app->check_win = CreateWindowW(L"BUTTON", L"Win", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                   245, 220, 70, 20, app->main_hwnd,
+                                   (HMENU)(INT_PTR)IDC_CHECK_WIN, app->instance, NULL);
+    apply_font(app->check_win, font);
+
+    app->current_hotkey_label = CreateWindowW(L"STATIC", L"当前快捷键：未设置",
+                                              WS_CHILD | WS_VISIBLE,
+                                              20, 248, 260, 20, app->main_hwnd,
+                                              (HMENU)(INT_PTR)IDC_LABEL_CURRENT_HOTKEY,
+                                              app->instance, NULL);
+    apply_font(app->current_hotkey_label, font);
+
+    button = CreateWindowW(L"BUTTON", L"保存设置",
+                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                           530, 184, 120, 30, app->main_hwnd,
+                           (HMENU)(INT_PTR)IDC_BTN_APPLY, app->instance, NULL);
+    apply_font(button, font);
+
+    button = CreateWindowW(L"BUTTON", L"配置自检",
+                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                           660, 184, 120, 30, app->main_hwnd,
+                           (HMENU)(INT_PTR)IDC_BTN_SELF_CHECK, app->instance, NULL);
+    apply_font(button, font);
+
+    button = CreateWindowW(L"BUTTON", L"安装本地模型（Sherpa）",
+                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                           530, 220, 250, 30, app->main_hwnd,
+                           (HMENU)(INT_PTR)IDC_BTN_INSTALL_SHERPA, app->instance, NULL);
+    apply_font(button, font);
+
+    button = CreateWindowW(L"BUTTON", L"退出程序",
+                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                           530, 256, 250, 24, app->main_hwnd,
+                           (HMENU)(INT_PTR)IDC_BTN_EXIT, app->instance, NULL);
+    apply_font(button, font);
+
+    label = CreateWindowW(L"STATIC", L"术语纠错（错词=正词；多条用分号）：", WS_CHILD | WS_VISIBLE,
+                          20, 274, 260, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+
+    app->replace_rules_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
+                                              L"EDIT",
+                                              L"",
+                                              WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                              280,
+                                              270,
+                                              240,
+                                              24,
+                                              app->main_hwnd,
+                                              (HMENU)(INT_PTR)IDC_EDIT_REPLACE_RULES,
+                                              app->instance,
+                                              NULL);
+    apply_font(app->replace_rules_edit, font);
+
+    app->selfcheck_label = CreateWindowW(L"STATIC",
+                                         L"尚未执行自检。",
+                                         WS_CHILD | WS_VISIBLE | WS_BORDER,
+                                         20,
+                                         306,
+                                         820,
+                                         64,
+                                         app->main_hwnd,
+                                         (HMENU)(INT_PTR)IDC_LABEL_SELFCHECK,
+                                         app->instance,
+                                         NULL);
+    apply_font(app->selfcheck_label, font);
+
+    app->status_label = CreateWindowW(L"STATIC", L"就绪。",
+                                      WS_CHILD | WS_VISIBLE,
+                                      20, 380, 820, 20, app->main_hwnd,
+                                      (HMENU)(INT_PTR)IDC_LABEL_STATUS, app->instance, NULL);
+    apply_font(app->status_label, font);
+
+    label = CreateWindowW(L"STATIC",
+                          L"关闭窗口只会最小化到托盘；若要完全退出，请点击“退出程序”或托盘菜单“退出程序”。",
+                          WS_CHILD | WS_VISIBLE,
+                          20, 408, 820, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+
+    label = CreateWindowW(L"STATIC",
+                          L"说明：静音时长(ms)越小越容易触发自动停止；最长录音(ms)到达后会强制结束。",
+                          WS_CHILD | WS_VISIBLE,
+                          20, 430, 820, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+}
+
+static void create_float_controls(AppState *app) {
+    HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+
+    app->float_button = CreateWindowW(L"BUTTON", L"录音",
+                                      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                      8, 9, 68, 24, app->float_hwnd,
+                                      (HMENU)(INT_PTR)IDC_FLOAT_TOGGLE, app->instance, NULL);
+    apply_font(app->float_button, font);
+
+    app->float_status = CreateWindowW(L"STATIC", L"就绪",
+                                      WS_CHILD | WS_VISIBLE,
+                                      84, 13, 110, 18, app->float_hwnd,
+                                      (HMENU)(INT_PTR)IDC_FLOAT_STATUS, app->instance, NULL);
+    apply_font(app->float_status, font);
+}
+
+static LRESULT CALLBACK FloatWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    AppState *app = (AppState *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+    switch (msg) {
+    case WM_NCCREATE: {
+        CREATESTRUCTW *create = (CREATESTRUCTW *)lParam;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)create->lpCreateParams);
+        return TRUE;
+    }
+    case WM_CREATE:
+        app = (AppState *)((CREATESTRUCTW *)lParam)->lpCreateParams;
+        if (!app) {
+            return -1;
+        }
+        app->float_hwnd = hwnd;
+        create_float_controls(app);
+        return 0;
+    case WM_COMMAND:
+        if (LOWORD(wParam) == IDC_FLOAT_TOGGLE && HIWORD(wParam) == BN_CLICKED) {
+            if (app && app->main_hwnd) {
+                PostMessageW(app->main_hwnd, WMAPP_FLOAT_TOGGLE, 0, 0);
+            }
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        ShowWindow(hwnd, SW_HIDE);
+        return 0;
+    }
+
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    AppState *app = (AppState *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+    switch (msg) {
+    case WM_NCCREATE: {
+        CREATESTRUCTW *create = (CREATESTRUCTW *)lParam;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)create->lpCreateParams);
+        return TRUE;
+    }
+    case WM_CREATE:
+        app = (AppState *)((CREATESTRUCTW *)lParam)->lpCreateParams;
+        if (!app) {
+            return -1;
+        }
+        app->main_hwnd = hwnd;
+        create_main_controls(app);
+        return 0;
+    case WM_COMMAND:
+        switch (LOWORD(wParam)) {
+        case IDC_BTN_APPLY:
+            if (apply_hotkey_from_ui(app, FALSE)) {
+                apply_runtime_settings_from_ui(app, TRUE);
+                run_self_check(app, FALSE);
+                set_status(app, L"设置已保存。");
+            }
+            return 0;
+        case IDC_BTN_SELF_CHECK:
+            run_self_check(app, TRUE);
+            return 0;
+        case IDC_BTN_INSTALL_SHERPA:
+            launch_sherpa_installer(app);
+            return 0;
+        case IDC_BTN_EXIT:
+            app->exit_requested = TRUE;
+            DestroyWindow(hwnd);
+            return 0;
+        case ID_TRAY_OPEN:
+            show_main_window(app);
+            return 0;
+        case ID_TRAY_EXIT:
+            app->exit_requested = TRUE;
+            DestroyWindow(hwnd);
+            return 0;
+        default:
+            break;
+        }
+        break;
+    case WM_HOTKEY:
+        if (wParam == HOTKEY_RECORD_ID) {
+            HWND target = GetForegroundWindow();
+            if (!target || is_our_window(app, target)) {
+                target = app->follow_target_window;
+            }
+            toggle_recording(app, target);
+            return 0;
+        }
+        break;
+    case WM_TIMER:
+        if (wParam == TIMER_FOLLOW_INPUT) {
+            update_floating_position(app);
+            poll_recording_runtime(app);
+            return 0;
+        }
+        break;
+    case WMAPP_FLOAT_TOGGLE:
+        toggle_recording(app, app->follow_target_window);
+        return 0;
+    case WMAPP_TRANSCRIBE_DONE:
+        on_transcribe_done(app, (TranscribeResult *)lParam);
+        return 0;
+    case WMAPP_TRAYICON:
+        if (lParam == WM_LBUTTONUP || lParam == WM_LBUTTONDBLCLK) {
+            show_main_window(app);
+            return 0;
+        }
+        if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) {
+            show_tray_menu(app);
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        if (app && !app->exit_requested) {
+            ShowWindow(hwnd, SW_HIDE);
+            set_status(app, L"窗口已隐藏到托盘，程序仍在运行。");
+            return 0;
+        }
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_DESTROY:
+        if (app) {
+            KillTimer(hwnd, TIMER_FOLLOW_INPUT);
+            audio_abort();
+
+            if (app->hotkey_registered) {
+                UnregisterHotKey(app->main_hwnd, HOTKEY_RECORD_ID);
+                app->hotkey_registered = FALSE;
+            }
+
+            if (app->worker_thread) {
+                WaitForSingleObject(app->worker_thread, 5000);
+                CloseHandle(app->worker_thread);
+                app->worker_thread = NULL;
+            }
+
+            if (app->float_hwnd) {
+                DestroyWindow(app->float_hwnd);
+                app->float_hwnd = NULL;
+            }
+
+            remove_tray_icon(app);
+            DeleteFileW(app->wav_path);
+        }
+
+        PostQuitMessage(0);
+        return 0;
+    }
+
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
+    AppState app;
+    WNDCLASSEXW main_class;
+    WNDCLASSEXW float_class;
+    MSG message;
+
+    (void)hPrevInstance;
+    (void)lpCmdLine;
+    (void)nCmdShow;
+
+    ZeroMemory(&app, sizeof(app));
+    app.instance = hInstance;
+    app.state = VOICE_IDLE;
+
+    if (!build_temp_wav_path(app.wav_path, _countof(app.wav_path))) {
+        MessageBoxW(NULL, L"无法创建临时录音文件路径。", APP_TITLE, MB_ICONERROR);
+        return 1;
+    }
+
+    if (!build_config_path(app.config_path, _countof(app.config_path))) {
+        MessageBoxW(NULL, L"无法创建配置文件路径。", APP_TITLE, MB_ICONERROR);
+        return 1;
+    }
+
+    if (!build_log_path(app.config_path, app.log_path, _countof(app.log_path))) {
+        app.log_path[0] = L'\0';
+    }
+
+    ZeroMemory(&main_class, sizeof(main_class));
+    main_class.cbSize = sizeof(main_class);
+    main_class.lpfnWndProc = MainWndProc;
+    main_class.hInstance = hInstance;
+    main_class.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+    main_class.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    main_class.lpszClassName = MAIN_CLASS_NAME;
+
+    if (!RegisterClassExW(&main_class)) {
+        return 1;
+    }
+
+    ZeroMemory(&float_class, sizeof(float_class));
+    float_class.cbSize = sizeof(float_class);
+    float_class.lpfnWndProc = FloatWndProc;
+    float_class.hInstance = hInstance;
+    float_class.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+    float_class.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    float_class.lpszClassName = FLOAT_CLASS_NAME;
+
+    if (!RegisterClassExW(&float_class)) {
+        return 1;
+    }
+
+    app.main_hwnd = CreateWindowExW(0, MAIN_CLASS_NAME, APP_TITLE,
+                                    WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+                                    CW_USEDEFAULT, CW_USEDEFAULT, 920, 560,
+                                    NULL, NULL, hInstance, &app);
+    if (!app.main_hwnd) {
+        return 1;
+    }
+
+    app.float_hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, FLOAT_CLASS_NAME, L"语音输入悬浮窗",
+                                     WS_POPUP | WS_BORDER,
+                                     CW_USEDEFAULT, CW_USEDEFAULT, 200, 44,
+                                     NULL, NULL, hInstance, &app);
+    if (!app.float_hwnd) {
+        DestroyWindow(app.main_hwnd);
+        return 1;
+    }
+
+    load_settings(&app);
+    app_log_line(&app, "application startup");
+    if (!apply_hotkey_from_ui(&app, FALSE)) {
+        SetWindowTextW(app.hotkey_edit, L"R");
+        set_checked(app.check_ctrl, TRUE);
+        set_checked(app.check_alt, TRUE);
+        set_checked(app.check_shift, FALSE);
+        set_checked(app.check_win, FALSE);
+        apply_hotkey_from_ui(&app, FALSE);
+    }
+
+    if (!add_tray_icon(&app)) {
+        MessageBoxW(app.main_hwnd, L"托盘图标添加失败。", APP_TITLE, MB_ICONWARNING);
+    }
+
+    SetTimer(app.main_hwnd, TIMER_FOLLOW_INPUT, 220, NULL);
+    run_self_check(&app, FALSE);
+    update_float_button(&app);
+
+    ShowWindow(app.main_hwnd, SW_SHOW);
+    UpdateWindow(app.main_hwnd);
+    ShowWindow(app.float_hwnd, SW_HIDE);
+
+    while (GetMessageW(&message, NULL, 0, 0) > 0) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+
+    return (int)message.wParam;
+}

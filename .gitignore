@@ -1,0 +1,15 @@
+build/
+.vs/
+*.wav
+*.obj
+*.pdb
+*.ilk
+*.exe
+voice_ime.ini
+voice_ime.log
+third_party/sherpa/*.tar.bz2
+third_party/sherpa/help.txt
+third_party/sherpa/filelist.txt
+third_party/sherpa/run-noarg.txt
+third_party/sherpa/sherpa-onnx-v*/
+third_party/sherpa/models/
