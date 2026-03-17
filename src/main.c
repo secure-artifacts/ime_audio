@@ -59,6 +59,7 @@
 #define IDC_COMBO_GEMINI_MODEL 2030
 #define IDC_EDIT_GEMINI_PROMPT 2031
 #define IDC_COMBO_THINKING 2032
+#define IDC_LIST_LOG 2033
 
 #define IDC_FLOAT_TOGGLE 3001
 #define IDC_FLOAT_STATUS 3002
@@ -107,6 +108,7 @@ typedef struct AppState {
     HWND current_hotkey_label;
     HWND float_button;
     HWND float_status;
+    HWND log_list;
 
     wchar_t config_path[MAX_PATH];
     wchar_t wav_path[MAX_PATH];
@@ -168,6 +170,7 @@ typedef struct TranscribeResult {
 } TranscribeResult;
 
 static void trim_wide_whitespace(wchar_t *text);
+static void add_ui_log(AppState *app, const wchar_t *text);
 static void save_settings(AppState *app);
 static char *wide_to_utf8_alloc(const wchar_t *wide_text);
 static wchar_t *utf8_to_wide_alloc(const char *utf8_text);
@@ -816,6 +819,27 @@ static wchar_t *utf8_to_wide_alloc(const char *utf8_text) {
     }
 
     return wide;
+}
+
+
+static void add_ui_log(AppState *app, const wchar_t *text) {
+    if (!app || !app->log_list || !text) return;
+    
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wchar_t line[2048];
+    swprintf(line, _countof(line), L"[%02u:%02u:%02u] %ls", st.wHour, st.wMinute, st.wSecond, text);
+
+    LRESULT count = SendMessageW(app->log_list, LB_ADDSTRING, 0, (LPARAM)line);
+    if (count != LB_ERR) {
+        SendMessageW(app->log_list, LB_SETTOPINDEX, count, 0);
+    }
+    
+    count = SendMessageW(app->log_list, LB_GETCOUNT, 0, 0);
+    while (count > 100) {
+        SendMessageW(app->log_list, LB_DELETESTRING, 0, 0);
+        count--;
+    }
 }
 
 static BOOL is_checked(HWND checkbox) {
@@ -2457,6 +2481,16 @@ static void on_transcribe_done(AppState *app, TranscribeResult *result) {
                 app_log_line(app, "transcribe dropped after replace rules");
             } else {
                 apply_simple_sherpa_punctuation(app, &result->text);
+                
+                if (result->text && result->text[0] != '\0') {
+                    wchar_t *wide_res = utf8_to_wide_alloc(result->text);
+                    if (wide_res) {
+                        wchar_t ui_msg[1024];
+                        swprintf(ui_msg, _countof(ui_msg), L"原文: %ls", wide_res);
+                        add_ui_log(app, ui_msg);
+                        free(wide_res);
+                    }
+                }
 
                 if (app->translate_enabled) {
                     char *target_lang_utf8 = NULL;
@@ -2479,6 +2513,16 @@ static void on_transcribe_done(AppState *app, TranscribeResult *result) {
                             app_log_line(app, "gemini process success");
                             free(result->text);
                             result->text = processed_text;
+                            
+                            if (result->text && result->text[0] != '\0') {
+                                wchar_t *wide_proc = utf8_to_wide_alloc(result->text);
+                                if (wide_proc) {
+                                    wchar_t ui_msg[1024];
+                                    swprintf(ui_msg, _countof(ui_msg), L"AI处理: %ls", wide_proc);
+                                    add_ui_log(app, ui_msg);
+                                    free(wide_proc);
+                                }
+                            }
                         } else {
                             app_log_line(app, "gemini process failed: %s", process_error ? process_error : "unknown error");
                             // Fallback to original text if processing fails
@@ -2769,14 +2813,14 @@ static void create_main_controls(AppState *app) {
     apply_font(label, font);
 
     app->gemini_prompt_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                                           WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                           120, 174, 720, 24, app->main_hwnd,
+                                           WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
+                                           120, 174, 720, 60, app->main_hwnd,
                                            (HMENU)(INT_PTR)IDC_EDIT_GEMINI_PROMPT, app->instance, NULL);
     apply_font(app->gemini_prompt_edit, font);
     // -- 结束 --
 
     label = CreateWindowW(L"STATIC", L"Sherpa 程序：", WS_CHILD | WS_VISIBLE,
-                          20, 210, 110, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 250, 110, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->sherpa_exe_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
@@ -2784,7 +2828,7 @@ static void create_main_controls(AppState *app) {
                                            L"",
                                            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                            140,
-                                           206,
+                                           246,
                                            640,
                                            24,
                                            app->main_hwnd,
@@ -2794,7 +2838,7 @@ static void create_main_controls(AppState *app) {
     apply_font(app->sherpa_exe_edit, font);
 
     label = CreateWindowW(L"STATIC", L"Sherpa 参数：", WS_CHILD | WS_VISIBLE,
-                          20, 242, 110, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 282, 110, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->sherpa_args_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
@@ -2802,7 +2846,7 @@ static void create_main_controls(AppState *app) {
                                             L"",
                                             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                             140,
-                                            238,
+                                            278,
                                             640,
                                             24,
                                             app->main_hwnd,
@@ -2812,19 +2856,19 @@ static void create_main_controls(AppState *app) {
     apply_font(app->sherpa_args_edit, font);
 
     label = CreateWindowW(L"STATIC", L"静音判停参数：", WS_CHILD | WS_VISIBLE,
-                          20, 278, 120, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 318, 120, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     label = CreateWindowW(L"STATIC", L"音量阈值", WS_CHILD | WS_VISIBLE,
-                          140, 278, 70, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          140, 318, 70, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->threshold_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
                                           L"EDIT",
                                           L"1400",
                                           WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                          210,
-                                          274,
+                                          250,
+                                          314,
                                           80,
                                           24,
                                           app->main_hwnd,
@@ -2834,7 +2878,7 @@ static void create_main_controls(AppState *app) {
     apply_font(app->threshold_edit, font);
 
     label = CreateWindowW(L"STATIC", L"静音时长(ms)", WS_CHILD | WS_VISIBLE,
-                          310, 278, 90, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          310, 318, 90, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->silence_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
@@ -2842,7 +2886,7 @@ static void create_main_controls(AppState *app) {
                                         L"1500",
                                         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                         400,
-                                        274,
+                                        314,
                                         80,
                                         24,
                                         app->main_hwnd,
@@ -2852,7 +2896,7 @@ static void create_main_controls(AppState *app) {
     apply_font(app->silence_edit, font);
 
     label = CreateWindowW(L"STATIC", L"最短录音(ms)", WS_CHILD | WS_VISIBLE,
-                          500, 278, 90, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          500, 318, 90, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->minrec_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
@@ -2860,7 +2904,7 @@ static void create_main_controls(AppState *app) {
                                        L"900",
                                        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                        590,
-                                       274,
+                                       314,
                                        80,
                                        24,
                                        app->main_hwnd,
@@ -2870,7 +2914,7 @@ static void create_main_controls(AppState *app) {
     apply_font(app->minrec_edit, font);
 
     label = CreateWindowW(L"STATIC", L"最长录音(ms)", WS_CHILD | WS_VISIBLE,
-                          680, 278, 90, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          680, 318, 90, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->maxrec_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
@@ -2878,7 +2922,7 @@ static void create_main_controls(AppState *app) {
                                        L"30000",
                                        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                        770,
-                                       274,
+                                       314,
                                        70,
                                        24,
                                        app->main_hwnd,
@@ -2888,68 +2932,68 @@ static void create_main_controls(AppState *app) {
     apply_font(app->maxrec_edit, font);
 
     label = CreateWindowW(L"STATIC", L"快捷键（A-Z/0-9/F1-F24）：", WS_CHILD | WS_VISIBLE,
-                          20, 316, 220, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 356, 220, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->hotkey_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"R",
                                        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                       250, 312, 80, 24, app->main_hwnd,
+                                       250, 352, 80, 24, app->main_hwnd,
                                        (HMENU)(INT_PTR)IDC_EDIT_HOTKEY, app->instance, NULL);
     apply_font(app->hotkey_edit, font);
 
     app->check_ctrl = CreateWindowW(L"BUTTON", L"Ctrl", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                    20, 348, 70, 20, app->main_hwnd,
+                                    20, 388, 70, 20, app->main_hwnd,
                                     (HMENU)(INT_PTR)IDC_CHECK_CTRL, app->instance, NULL);
     apply_font(app->check_ctrl, font);
 
     app->check_alt = CreateWindowW(L"BUTTON", L"Alt", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                   95, 348, 70, 20, app->main_hwnd,
+                                   95, 388, 70, 20, app->main_hwnd,
                                    (HMENU)(INT_PTR)IDC_CHECK_ALT, app->instance, NULL);
     apply_font(app->check_alt, font);
 
     app->check_shift = CreateWindowW(L"BUTTON", L"Shift", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                     170, 348, 70, 20, app->main_hwnd,
+                                     170, 388, 70, 20, app->main_hwnd,
                                      (HMENU)(INT_PTR)IDC_CHECK_SHIFT, app->instance, NULL);
     apply_font(app->check_shift, font);
 
     app->check_win = CreateWindowW(L"BUTTON", L"Win", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                   245, 348, 70, 20, app->main_hwnd,
+                                   245, 388, 70, 20, app->main_hwnd,
                                    (HMENU)(INT_PTR)IDC_CHECK_WIN, app->instance, NULL);
     apply_font(app->check_win, font);
 
     app->current_hotkey_label = CreateWindowW(L"STATIC", L"当前快捷键：未设置",
                                               WS_CHILD | WS_VISIBLE,
-                                              20, 376, 260, 20, app->main_hwnd,
+                                              20, 416, 260, 20, app->main_hwnd,
                                               (HMENU)(INT_PTR)IDC_LABEL_CURRENT_HOTKEY,
                                               app->instance, NULL);
     apply_font(app->current_hotkey_label, font);
 
     button = CreateWindowW(L"BUTTON", L"保存设置",
                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                           530, 312, 120, 30, app->main_hwnd,
+                           530, 352, 120, 30, app->main_hwnd,
                            (HMENU)(INT_PTR)IDC_BTN_APPLY, app->instance, NULL);
     apply_font(button, font);
 
     button = CreateWindowW(L"BUTTON", L"配置自检",
                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                           660, 312, 120, 30, app->main_hwnd,
+                           660, 352, 120, 30, app->main_hwnd,
                            (HMENU)(INT_PTR)IDC_BTN_SELF_CHECK, app->instance, NULL);
     apply_font(button, font);
 
     button = CreateWindowW(L"BUTTON", L"安装本地模型（Sherpa）",
                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                           530, 348, 250, 30, app->main_hwnd,
+                           530, 388, 250, 30, app->main_hwnd,
                            (HMENU)(INT_PTR)IDC_BTN_INSTALL_SHERPA, app->instance, NULL);
     apply_font(button, font);
 
     button = CreateWindowW(L"BUTTON", L"退出程序",
                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                           530, 384, 250, 24, app->main_hwnd,
+                           530, 424, 250, 24, app->main_hwnd,
                            (HMENU)(INT_PTR)IDC_BTN_EXIT, app->instance, NULL);
     apply_font(button, font);
 
     label = CreateWindowW(L"STATIC", L"术语纠错（错词=正词；多条用分号）：", WS_CHILD | WS_VISIBLE,
-                          20, 402, 260, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 442, 260, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->replace_rules_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
@@ -2957,7 +3001,7 @@ static void create_main_controls(AppState *app) {
                                               L"",
                                               WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                               280,
-                                              398,
+                                              438,
                                               240,
                                               24,
                                               app->main_hwnd,
@@ -2970,7 +3014,7 @@ static void create_main_controls(AppState *app) {
                                          L"尚未执行自检。",
                                          WS_CHILD | WS_VISIBLE | WS_BORDER,
                                          20,
-                                         434,
+                                         474,
                                          820,
                                          64,
                                          app->main_hwnd,
@@ -2981,23 +3025,32 @@ static void create_main_controls(AppState *app) {
 
     app->status_label = CreateWindowW(L"STATIC", L"就绪。",
                                       WS_CHILD | WS_VISIBLE,
-                                      20, 508, 820, 20, app->main_hwnd,
+                                      20, 548, 820, 20, app->main_hwnd,
                                       (HMENU)(INT_PTR)IDC_LABEL_STATUS, app->instance, NULL);
     apply_font(app->status_label, font);
 
     label = CreateWindowW(L"STATIC",
                           L"关闭窗口只会最小化到托盘；若要完全退出，请点击“退出程序”或托盘菜单“退出程序”。",
                           WS_CHILD | WS_VISIBLE,
-                          20, 536, 820, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 576, 820, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     label = CreateWindowW(L"STATIC",
                           L"说明：静音时长(ms)越小越容易触发自动停止；最长录音(ms)到达后会强制结束。",
                           WS_CHILD | WS_VISIBLE,
-                          20, 558, 820, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 598, 820, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
-}
 
+    label = CreateWindowW(L"STATIC", L"识别与处理日志 (仅保留最新100条)：", WS_CHILD | WS_VISIBLE,
+                          20, 626, 400, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+
+    app->log_list = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+                                    WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOINTEGRALHEIGHT | LBS_HASSTRINGS | LBS_NOTIFY,
+                                    20, 646, 820, 150, app->main_hwnd,
+                                    (HMENU)(INT_PTR)IDC_LIST_LOG, app->instance, NULL);
+    apply_font(app->log_list, font);
+}
 static void create_float_controls(AppState *app) {
     HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
 
@@ -3224,6 +3277,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
 
     if (!build_log_path(app.config_path, app.log_path, _countof(app.log_path))) {
         app.log_path[0] = L'\0';
+    } else {
+        HANDLE hLog = CreateFileW(app.log_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hLog != INVALID_HANDLE_VALUE) {
+            CloseHandle(hLog);
+        }
     }
 
     ZeroMemory(&main_class, sizeof(main_class));
@@ -3252,7 +3310,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
 
     app.main_hwnd = CreateWindowExW(0, MAIN_CLASS_NAME, APP_TITLE,
                                     WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-                                    CW_USEDEFAULT, CW_USEDEFAULT, 920, 760,
+                                    CW_USEDEFAULT, CW_USEDEFAULT, 920, 860,
                                     NULL, NULL, hInstance, &app);
     if (!app.main_hwnd) {
         return 1;
@@ -3291,6 +3349,18 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
     ShowWindow(app.float_hwnd, SW_HIDE);
 
     while (GetMessageW(&message, NULL, 0, 0) > 0) {
+        if (message.message == WM_KEYDOWN && message.wParam == 'A' && (GetKeyState(VK_CONTROL) < 0)) {
+            HWND hFocus = GetFocus();
+            if (hFocus) {
+                wchar_t className[32];
+                if (GetClassNameW(hFocus, className, 32)) {
+                    if (_wcsicmp(className, L"Edit") == 0) {
+                        SendMessageW(hFocus, EM_SETSEL, 0, -1);
+                        continue;
+                    }
+                }
+            }
+        }
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
