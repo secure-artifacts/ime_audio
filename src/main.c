@@ -115,6 +115,7 @@ typedef struct AppState {
     BOOL tray_added;
     BOOL exit_requested;
     BOOL continuous_mode;
+    BOOL pause_requested;
     BOOL auto_stop_enabled;
     BOOL stop_after_current;
     BOOL translate_enabled;
@@ -1013,7 +1014,9 @@ static void update_float_button(AppState *app) {
     }
 
     if (app->state == VOICE_RECORDING) {
-        caption = L"停止";
+        caption = L"暂停";
+    } else if (app->state == VOICE_PAUSED) {
+        caption = L"继续";
     } else if (app->state == VOICE_TRANSCRIBING) {
         caption = L"...";
         enabled = FALSE;
@@ -1850,11 +1853,12 @@ static void update_floating_position(AppState *app) {
 
     foreground = GetForegroundWindow();
     if (!foreground || is_our_window(app, foreground)) {
-        // 如果当前焦点是我们自己的窗口，且不是录音状态，则隐藏
+        // 如果当前焦点是我们自己的窗口，且不是录音/暂停/识别状态，则隐藏
         if (app->state == VOICE_IDLE) {
             ShowWindow(app->float_hwnd, SW_HIDE);
-            return;
         }
+        // 当我们自己的窗口处于激活状态时，不更新位置，避免悬浮窗自己以自己为锚点产生漂移
+        return;
     }
 
     ZeroMemory(&thread_info, sizeof(thread_info));
@@ -2082,7 +2086,7 @@ static BOOL stop_recording_and_transcribe(AppState *app, BOOL auto_stop) {
     }
 
     // 只有在自动断句且开启了连续模式时，才保持录音设备开启
-    if (auto_stop && app->continuous_mode && !app->stop_after_current && !app->exit_requested) {
+    if (auto_stop && app->continuous_mode && !app->stop_after_current && !app->exit_requested && !app->pause_requested) {
         should_continue_recording = TRUE;
     }
 
@@ -2129,11 +2133,19 @@ static void poll_recording_runtime(AppState *app) {
         return;
     }
 
-    if (!app->auto_stop_enabled) {
+    if (!audio_get_runtime_status(&status)) {
         return;
     }
 
-    if (!audio_get_runtime_status(&status)) {
+    if (app->float_status) {
+        if (status.had_voice) {
+            SetWindowTextW(app->float_status, L"录音中(有声音)");
+        } else {
+            SetWindowTextW(app->float_status, L"录音中(静音)");
+        }
+    }
+
+    if (!app->auto_stop_enabled) {
         return;
     }
 
@@ -2174,24 +2186,21 @@ static void toggle_recording(AppState *app, HWND target_hint) {
 
     if (app->state == VOICE_TRANSCRIBING) {
         app->stop_after_current = TRUE;
-        if (app->continuous_mode) {
-            app->continuous_mode = FALSE;
-            if (app->continuous_check) {
-                set_checked(app->continuous_check, FALSE);
-            }
-            save_settings(app);
-        }
-        set_status(app, L"已请求停止：当前识别完成后不再自动继续处理。");
-        app_log_line(app, "stop requested while transcribing");
+        app->pause_requested = TRUE;
+        set_status(app, L"已请求暂停：当前识别完成后将暂停。");
+        app_log_line(app, "pause requested while transcribing");
         return;
     }
 
-    if (app->state == VOICE_IDLE) {
+    if (app->state == VOICE_IDLE || app->state == VOICE_PAUSED) {
         app->stop_after_current = FALSE;
+        app->pause_requested = FALSE;
         start_recording_session(app, target_hint);
         return;
     }
 
+    // VOICE_RECORDING 状态下按快捷键，请求暂停
+    app->pause_requested = TRUE;
     stop_recording_and_transcribe(app, FALSE);
 }
 
@@ -2204,9 +2213,28 @@ static void on_transcribe_done(AppState *app, TranscribeResult *result) {
     }
 
     // 如果之前已经通过 continue 模式保持了录音，则不需要 restart
-    should_restart = app->continuous_mode && !app->exit_requested && !app->stop_after_current && !was_continuing;
+    if (app->pause_requested) {
+        should_restart = FALSE;
+    } else {
+        should_restart = app->continuous_mode && !app->exit_requested && !app->stop_after_current && !was_continuing;
+    }
 
-    app->state = was_continuing ? VOICE_RECORDING : VOICE_IDLE;
+    if (app->pause_requested) {
+        app->state = VOICE_PAUSED;
+        app->pause_requested = FALSE;
+        if (was_continuing) {
+            audio_abort();
+        }
+    } else {
+        app->state = was_continuing ? VOICE_RECORDING : VOICE_IDLE;
+    }
+    
+    if (app->state == VOICE_PAUSED) {
+        if (app->float_status) SetWindowTextW(app->float_status, L"已暂停");
+    } else if (app->state == VOICE_IDLE) {
+        if (app->float_status) SetWindowTextW(app->float_status, L"就绪");
+    }
+
     update_float_button(app);
 
     if (!result) {
@@ -2258,12 +2286,17 @@ static void on_transcribe_done(AppState *app, TranscribeResult *result) {
                     Sleep(20); // 稍微等待焦点稳定
                 }
 
-                if (injector_paste_utf8(result->text)) {
-                    set_status(app, L"已粘贴。");
-                    app_log_line(app, "paste success text_len=%u to HWND=0x%p", (unsigned)strlen(result->text), target);
+                if (!app->pause_requested && app->state != VOICE_PAUSED) {
+                    if (injector_paste_utf8(result->text)) {
+                        set_status(app, L"已粘贴。");
+                        app_log_line(app, "paste success text_len=%u to HWND=0x%p", (unsigned)strlen(result->text), target);
+                    } else {
+                        set_status(app, L"粘贴失败，请保持光标在目标输入框。");
+                        app_log_line(app, "paste failed text_len=%u", (unsigned)strlen(result->text));
+                    }
                 } else {
-                    set_status(app, L"粘贴失败，请保持光标在目标输入框。");
-                    app_log_line(app, "paste failed text_len=%u", (unsigned)strlen(result->text));
+                    set_status(app, L"已丢弃暂停期间的识别结果。");
+                    app_log_line(app, "paste dropped due to pause text_len=%u", (unsigned)strlen(result->text));
                 }
             }
         }
