@@ -19,3 +19,7 @@ if (MSVC)
     target_compile_options(voice_ime PRIVATE /utf-8)
 endif()
 target_link_libraries(voice_ime PRIVATE winmm winhttp user32 shell32)
+
+if(MINGW)
+    target_link_options(voice_ime PRIVATE -municode)
+endif()
