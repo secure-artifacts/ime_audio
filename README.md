@@ -1,139 +1,83 @@
 # Windows 语音输入法 (C + Win32 GUI)
 
-这是一个可后台运行的 Windows 全局语音输入工具，支持云端与本地两种识别后端。
+这是一个可后台运行的 Windows 全局语音输入工具，旨在提供极速、高准确率、无缝衔接的桌面语音转文字体验。支持云端（Groq / Gemini / Gladia）与本地（Sherpa-onnx）多种识别后端。
 
-## 当前能力
+## 🌟 核心特性
 
-- 全局热键控制录音（任意输入框可用）
-- 设置窗口输入 API Key 与热键
-- 设置窗口可直接配置 backend、continuous mode、阈值和 Sherpa 参数
-- 启动后自动执行配置自检，界面可手动点击 Self-check
-- 一键安装 Sherpa（运行脚本或点击 Install Sherpa）
-- 关闭窗口后最小化到托盘继续运行
-- 悬浮按钮跟随当前前台输入窗口
-- 自动静音停录（静音一段时间自动结束并识别）
-- 识别结果自动粘贴（剪贴板 + Ctrl+V）
-- 识别日志写入 voice_ime.log
-- 后端可切换：groq 或 sherpa
+- **全局热键与悬浮窗**：在任意应用输入框中，通过全局热键随时唤起录音；悬浮按钮智能跟随当前光标（或前台窗口）。
+- **多端识别能力**：
+  - **Gemini Native Audio (首选)**：利用 Google Gemini 多模态能力，将语音直接交由大模型处理，**一步到位**实现语音转写、润色与翻译，延迟极低。
+  - **Groq API**：利用 Groq 极速 API 驱动的 Whisper 模型，实现毫秒级超快识别。
+  - **Gladia API**：支持 Gladia 高效的云端语音转文字服务。
+  - **Sherpa-onnx (本地)**：完全离线运行，保护隐私，无网络延迟。支持一键自动化安装本地环境与模型。
+- **AI 智能润色与多语种翻译**：
+  - 内置 Gemini 文本处理器。无论使用哪种底层语音识别，皆可将文本结果二次送入 Gemini 进行润色、排版、去除语气词或**多语种翻译**。
+  - 支持自定义 System Prompt 和 Gemini 3.1 思考模式配置（Thinking Level）。
+- **智能 VAD 与防幻觉 (Anti-Hallucination)**：
+  - 增强的底层 VAD（语音活动检测）：自动过滤键盘敲击、鼠标点击等极短孤立底噪，只在真人连续说话时触发录音。
+  - 防乱出字：结合特定的 Prompt 防幻觉指令，彻底解决由于底噪引发的大模型“幻觉（如乱出字幕词、无意义乱码）”。
+- **灵活的判停与续录逻辑**：
+  - 支持**自动静音停录**：说话完毕停顿数秒后自动上屏，无需再次按键。
+  - 支持**自动监听（连续模式）**：一次识别上屏后，自动恢复录音状态，实现不间断的语音连续输入。
+- **本地术语纠错**：可在界面配置文本替换规则（如 `错词=正词;`），在 AI 处理前/后自动进行本地修正。
 
-## 依赖
+## 🛠️ 编译与依赖
 
-- Windows 10/11
-- CMake 3.20+
-- Visual Studio 2022 (MSVC)
-
-使用 groq 后端时还需要网络访问 api.groq.com。
-
-## 构建
+- **操作系统**：Windows 10/11
+- **构建工具**：CMake 3.20+
+- **编译器**：Visual Studio 2022 (MSVC)
+- **网络条件**：使用云端服务 (Groq / Gemini / Gladia) 时需确保相应的网络连通性。
 
 ```powershell
+# 1. 生成构建系统
 cmake -S . -B build -G "Visual Studio 17 2022"
+
+# 2. 编译 Release 版本
 cmake --build build --config Release
 ```
 
-输出程序：build\Release\voice_ime.exe
+编译输出程序：`build\Release\voice_ime.exe`
 
-## 快速使用
+## 🚀 快速上手
 
-1. 运行程序后先设置热键，点击 Apply & Save。
-2. 使用 groq 时，在界面填写 API Key，并将 backend 选为 groq。
-3. 使用 sherpa 时，将 backend 选为 sherpa，并填写 Sherpa EXE / Sherpa Args。
-4. 可点击 Self-check 验证配置是否完整。
-5. 在任意应用输入框中按热键开始录音。
-6. 再按一次热键手动结束，或等待自动静音停录。
-7. 转写完成后自动粘贴到目标输入框。
-8. 点击主窗口关闭按钮会隐藏到托盘，不会退出。
+1. 启动 `voice_ime.exe`。
+2. 在设置界面配置您的 **热键**（默认为 `Ctrl + Alt + R`）。
+3. 选择 **识别后端**：
+   - 推荐选择 **Gemini Native Audio**，并在下方填写 `Gemini Key`（也可以填上特定 `Project ID` 或切换 `Gemini 模型`）。
+   - 若您想通过先转文字再润色的形式组合不同平台，也可选择 **Groq** 后端 + 勾选 **启用 Gemini 润色/处理/翻译**。
+4. **自定义 AI 行为**：
+   - 下拉选择翻译目标语言（支持英、日、韩、法等）。
+   - 在“Gemini 指令”栏填入您的个性化要求（如：“去除多余的语气词，帮我把这段话改写得更加商务正式”）。
+5. 点击 **[保存设置]** 并关闭窗口（程序将隐藏到右下角托盘）。
+6. **开始输入**：
+   - 将光标放在任意聊天软件或文档中。
+   - 按下设置的热键开始说话（界面或悬浮窗提示“录音中”）。
+   - 停顿 1.5 秒（默认静音时长），程序会自动停止录音，并瞬间将处理后的文字输出在您的光标处。
 
-## 一键安装 Sherpa
+## 💻 一键安装本地模型 (Sherpa)
 
-方式 1（推荐）：在应用界面点击 Install Sherpa。
+若您希望完全离线使用：
+1. 主界面 -> 识别后端选择 **Sherpa (本地)**。
+2. 点击界面上的 **[安装本地模型（Sherpa）]** 按钮。
+3. 程序会启动脚本自动下载 `sherpa-onnx` 运行包以及 `paraformer-zh` 中文离线大模型。
+4. 下载完毕后自动填充路径。点击 **[配置自检]** 显示通过即可离线使用。
 
-方式 2（命令行）：
+## ⚙️ 进阶参数说明
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_sherpa.ps1 -ConfigureIni
-```
+所有配置不仅可以在 GUI 修改，也可通过程序同目录下的 `voice_ime.ini` 批量修改：
 
-该脚本会：
+- **VAD (声音检测) 阈值设置**：
+  - `音量阈值 (voice_threshold)`：默认 1400。若环境嘈杂导致乱触发，可提高至 2500~4000。
+  - `静音时长 (silence_timeout_ms)`：默认 1500ms。检测到低于阈值的静音超过此时间即判定断句。
+  - `最短录音 (min_record_ms)`：默认 900ms。低于此时长的纯噪音将被直接丢弃。
+  - `最长录音 (max_record_ms)`：默认 30000ms。到达后强制结束当前段落的录制并发送识别。
+- **术语纠错格式**：`旧词=新词;词语A=词语B;` （注意使用分号结尾，支持全/半角分号）。
 
-- 下载并解压 sherpa-onnx Windows 运行包（x64 static no-tts）
-- 下载中文 paraformer 模型（model.int8.onnx + tokens.txt）
-- 自动更新 voice_ime.ini 的 backend/sherpa_exe/sherpa_args
+## 📝 日志与排错
 
-> 初次下载体积较大，视网络情况需要几分钟。
-
-## 配置文件
-
-程序会在 exe 同目录读写 voice_ime.ini。
-
-说明：大部分配置可以在 GUI 中直接修改；INI 仍可用于批量部署或手工微调。
-
-主要字段如下（settings 段）：
-
-- api_key: groq 的 API Key
-- hotkey_key: 主键，例如 R、F6、Enter
-- hotkey_mods: 修饰键位掩码
-- backend: groq 或 sherpa
-- sherpa_exe: sherpa 可执行文件路径
-- sherpa_args: sherpa 模型参数（不需要写 wav 路径）
-- continuous_mode: 1 表示一次识别结束后自动继续录音，0 表示关闭
-- sample_rate: 采样率，默认 16000
-- voice_threshold: 判定有声的峰值阈值
-- silence_timeout_ms: 静音超过该时长自动停录
-- min_record_ms: 最短录音时长，未达到不会触发静音停录
-- max_record_ms: 最长录音时长，达到后强制停录
-
-hotkey_mods 位掩码：Alt=1, Ctrl=2, Shift=4, Win=8。
-例如 Ctrl+Alt 为 3。
-
-## Sherpa 本地后端示例
-
-把 backend 设为 sherpa，并填写 sherpa_exe 与 sherpa_args。
-
-示例：
-
-```ini
-[settings]
-backend=sherpa
-sherpa_exe=C:\\models\\sherpa-onnx\\bin\\sherpa-onnx-offline.exe
-sherpa_args=--tokens=C:\\models\\sherpa-onnx\\tokens.txt --encoder=C:\\models\\sherpa-onnx\\encoder.onnx --decoder=C:\\models\\sherpa-onnx\\decoder.onnx --joiner=C:\\models\\sherpa-onnx\\joiner.onnx
-```
-
-说明：
-
-- 程序会自动把录音 wav 路径追加到命令末尾。
-- 如果路径包含空格，请在 sherpa_args 中自行加引号。
-- 如果 sherpa_exe 为空，默认尝试 sherpa-onnx-offline.exe（需在 PATH 中可找到）。
-
-## 自动静音停录逻辑
-
-录音中满足以下任一条件会自动结束并开始识别：
-
-- 已录音时长 >= min_record_ms 且静音时长 >= silence_timeout_ms
-- 已录音时长 >= max_record_ms
-
-## 日志
-
-日志文件：voice_ime.log（与 exe 同目录）。
-
-日志包含：
-
-- 启动与配置加载
-- 录音开始/结束（手动或自动）
-- 转写后端与结果状态
-- 粘贴成功/失败
-- 失败原因（包含 groq/sherpa 返回文本）
-
-## 实现说明
-
-1. waveIn 采集 PCM 数据并写入临时 WAV。
-2. 按 backend 分支调用：
-   - groq: 走 HTTP 上传 WAV 转写。
-   - sherpa: 启动本地 CLI 执行离线转写。
-3. 将识别文本写入剪贴板并模拟 Ctrl+V。
-4. 定时器跟踪前台焦点并更新悬浮按钮位置。
+程序会在 `.exe` 同级目录下生成 `voice_ime.log` 文件。
+若遇到按快捷键无反应、识别不出字或上屏失败的情况，可打开日志文件，里面详细记录了录音设备状态、云端 API 的错误返回值（如 HTTP 400/401/403/500）以及剪贴板注入状态。
 
 ## 已知限制
-
-- 某些应用限制前台切换或模拟输入，可能影响自动粘贴。
-- 当前会覆盖剪贴板内容（后续可加粘贴后恢复）。
+- 某些具有反作弊或管理员高权限的游戏/应用（如部分网游终端或 UAC 弹窗），可能无法响应热键或拒绝模拟键盘粘贴输入。
+- 当前粘贴逻辑会临时借用系统剪贴板（模拟 `Ctrl+V`），因此会覆盖您当前的剪贴板内容。
