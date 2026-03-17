@@ -11,6 +11,7 @@ add_executable(voice_ime WIN32
     src/groq_client.c
     src/gemini_client.c
     src/input_injector.c
+    src/voice_ime.rc
 )
 
 target_compile_definitions(voice_ime PRIVATE _CRT_SECURE_NO_WARNINGS)
