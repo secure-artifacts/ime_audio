@@ -1539,10 +1539,10 @@ static BOOL launch_sherpa_installer(AppState *app) {
         extract_parent_dir(parent_dir, grandparent_dir, _countof(grandparent_dir));
     }
 
-    swprintf(script_path, _countof(script_path), L"%ls\\scripts\\install_sherpa.ps1", app_dir);
+    swprintf(script_path, _countof(script_path), L"%ls\\scripts\\install_sherpa.bat", app_dir);
     if (!file_exists_non_dir(script_path)) {
         if (parent_dir[0] != L'\0') {
-            swprintf(candidate, _countof(candidate), L"%ls\\scripts\\install_sherpa.ps1", parent_dir);
+            swprintf(candidate, _countof(candidate), L"%ls\\scripts\\install_sherpa.bat", parent_dir);
             if (file_exists_non_dir(candidate)) {
                 wcsncpy_s(script_path, _countof(script_path), candidate, _TRUNCATE);
             }
@@ -1551,7 +1551,7 @@ static BOOL launch_sherpa_installer(AppState *app) {
 
     if (!file_exists_non_dir(script_path)) {
         if (grandparent_dir[0] != L'\0') {
-            swprintf(candidate, _countof(candidate), L"%ls\\scripts\\install_sherpa.ps1", grandparent_dir);
+            swprintf(candidate, _countof(candidate), L"%ls\\scripts\\install_sherpa.bat", grandparent_dir);
             if (file_exists_non_dir(candidate)) {
                 wcsncpy_s(script_path, _countof(script_path), candidate, _TRUNCATE);
             }
@@ -1559,7 +1559,7 @@ static BOOL launch_sherpa_installer(AppState *app) {
     }
 
     if (!file_exists_non_dir(script_path)) {
-        set_status(app, L"未找到安装脚本 scripts\\install_sherpa.ps1。");
+        set_status(app, L"未找到安装脚本 scripts\\install_sherpa.bat。");
         return FALSE;
     }
 
@@ -1573,15 +1573,11 @@ static BOOL launch_sherpa_installer(AppState *app) {
         work_dir = app_dir;
     }
 
-    swprintf(params,
-             _countof(params),
-             L"-NoProfile -ExecutionPolicy Unrestricted -File \"%ls\" -ConfigureIni -IniPath \"%ls\"",
-             script_path,
-             app->config_path);
+    swprintf(params, _countof(params), L"/c \"%ls\"", script_path);
 
     shell_result = ShellExecuteW(app->main_hwnd,
                                  L"open",
-                                 L"powershell.exe",
+                                 L"cmd.exe",
                                  params,
                                  work_dir,
                                  SW_SHOWNORMAL);
