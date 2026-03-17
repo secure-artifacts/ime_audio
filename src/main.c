@@ -1575,7 +1575,7 @@ static BOOL launch_sherpa_installer(AppState *app) {
 
     swprintf(params,
              _countof(params),
-             L"-NoProfile -ExecutionPolicy Bypass -File \"%ls\" -ConfigureIni -IniPath \"%ls\"",
+             L"-NoProfile -ExecutionPolicy Unrestricted -File \"%ls\" -ConfigureIni -IniPath \"%ls\"",
              script_path,
              app->config_path);
 
