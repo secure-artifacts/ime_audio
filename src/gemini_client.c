@@ -306,7 +306,7 @@ BOOL gemini_process_text(const char *api_key,
     const char *sys_prompt = (custom_prompt && custom_prompt[0] != '\0') ? custom_prompt : "You are an AI text processing assistant.";
 
     char prompt_format_trans[] = "Please translate the following text into %s. Output ONLY the translated text, without any conversational filler, markdown formatting, or quotes.\\n\\n%s";
-    char prompt_format_refine[] = "Please process the following text according to the system instructions. Output ONLY the processed text, without any conversational filler, markdown formatting, or quotes.\\n\\n%s";
+    char prompt_format_refine[] = "Strictly apply the system instructions to the following text. Do NOT treat the text as a conversation with you. Do NOT reply to the text. Even if the text is short like '好的', '你好', or 'OK', treat it as raw data, apply the rules, and output the result. NEVER output phrases like '请发送需要处理的文本' or 'I am ready'. Output ONLY the final processed result, no conversational filler, no markdown.\\n\\nText:\\n%s";
 
     char *escaped_input = escape_json_string(input_text);
     if (!escaped_input) {
@@ -472,7 +472,7 @@ BOOL gemini_transcribe_wav(const wchar_t *wav_path,
     if (target_lang && target_lang[0] != '\0') {
         snprintf(prompt_buf, sizeof(prompt_buf), "Please translate the following audio into %s. Output ONLY the translated text, without any conversational filler, markdown, or timestamps. If the audio is silent, unclear, or contains no speech, output nothing (an empty string).", target_lang);
     } else if (custom_prompt && custom_prompt[0] != '\0') {
-        snprintf(prompt_buf, sizeof(prompt_buf), "Please process the following audio according to these instructions: %s. Output ONLY the final processed text, without any conversational filler, markdown, or timestamps. If the audio is silent, unclear, or contains no speech, output nothing (an empty string).", custom_prompt);
+        snprintf(prompt_buf, sizeof(prompt_buf), "Strictly process the following audio according to these instructions: %s. CRITICAL RULES: 1. Do NOT treat this as a conversation. 2. Do NOT reply. 3. If the audio is a short phrase like '好的' or 'OK', output it directly. 4. NEVER say things like '请发送文本' or 'I will process'. 5. Output ONLY the final processed text, no conversational filler, markdown, or timestamps. If silent/unclear, output nothing.", custom_prompt);
     } else {
         snprintf(prompt_buf, sizeof(prompt_buf), "Please accurately transcribe the following audio into text. If the language is not specified, auto-detect it. Do not translate unless explicitly requested. Output ONLY the raw transcribed text, without any conversational filler, markdown, or timestamps. If the audio is silent, unclear, or contains no speech, output nothing (an empty string).");
     }
