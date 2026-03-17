@@ -9,6 +9,7 @@ add_executable(voice_ime WIN32
     src/audio_recorder.c
     src/asr_backend.c
     src/groq_client.c
+    src/gemini_client.c
     src/input_injector.c
 )
 

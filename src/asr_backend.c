@@ -398,6 +398,12 @@ AsrBackendKind asr_parse_backend_name(const wchar_t *name) {
     if (_wcsicmp(name, L"sherpa") == 0 || _wcsicmp(name, L"local") == 0) {
         return ASR_BACKEND_SHERPA;
     }
+    if (_wcsicmp(name, L"gladia") == 0) {
+        return ASR_BACKEND_GLADIA;
+    }
+    if (_wcsicmp(name, L"gemini") == 0) {
+        return ASR_BACKEND_GEMINI;
+    }
 
     return ASR_BACKEND_GROQ;
 }
@@ -405,6 +411,12 @@ AsrBackendKind asr_parse_backend_name(const wchar_t *name) {
 const wchar_t *asr_backend_name(AsrBackendKind backend) {
     if (backend == ASR_BACKEND_SHERPA) {
         return L"sherpa";
+    }
+    if (backend == ASR_BACKEND_GLADIA) {
+        return L"gladia";
+    }
+    if (backend == ASR_BACKEND_GEMINI) {
+        return L"gemini";
     }
 
     return L"groq";

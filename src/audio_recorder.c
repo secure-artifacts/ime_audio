@@ -9,7 +9,7 @@
 
 #define RECORDER_BUFFER_COUNT 6
 #define RECORDER_BUFFER_MS 100
-#define VOICE_ACTIVATION_FRAMES 2
+#define VOICE_ACTIVATION_FRAMES 3
 
 static CRITICAL_SECTION g_lock;
 static BOOL g_lock_ready = FALSE;
@@ -254,6 +254,12 @@ static void CALLBACK wave_in_proc(HWAVEIN hwi, UINT msg, DWORD_PTR instance, DWO
             }
             if (g_voice_peak_hit_count >= VOICE_ACTIVATION_FRAMES) {
                 g_has_voice = TRUE;
+            }
+        } else {
+            // If we have not yet confirmed voice, and it's been quiet for > 400ms, reset the peak counter
+            // This prevents isolated clicks (like mouse clicks or typing) from accumulating over time
+            if (!g_has_voice && (now_ms - g_last_voice_ms > 400)) {
+                g_voice_peak_hit_count = 0;
             }
         }
 

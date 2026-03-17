@@ -5,7 +5,9 @@
 
 typedef enum AsrBackendKind {
     ASR_BACKEND_GROQ = 0,
-    ASR_BACKEND_SHERPA = 1
+    ASR_BACKEND_SHERPA = 1,
+    ASR_BACKEND_GLADIA = 2,
+    ASR_BACKEND_GEMINI = 3
 } AsrBackendKind;
 
 AsrBackendKind asr_parse_backend_name(const wchar_t *name);
