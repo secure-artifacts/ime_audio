@@ -1471,6 +1471,7 @@ static BOOL build_self_check_report(AppState *app, wchar_t *report, size_t repor
         extract_parent_dir(app->sherpa_exe, sherpa_dir, _countof(sherpa_dir));
         has_paraformer = extract_option_value(app->sherpa_args, L"--paraformer=", tmp, _countof(tmp));
         BOOL has_funasr = extract_option_value(app->sherpa_args, L"--funasr-nano-llm=", tmp, _countof(tmp));
+        BOOL has_sense_voice = extract_option_value(app->sherpa_args, L"--sense-voice-model=", tmp, _countof(tmp));
         has_whisper_encoder = extract_option_value(app->sherpa_args, L"--whisper-encoder=", tmp, _countof(tmp));
         has_whisper_decoder = extract_option_value(app->sherpa_args, L"--whisper-decoder=", tmp, _countof(tmp));
 
@@ -1485,7 +1486,8 @@ static BOOL build_self_check_report(AppState *app, wchar_t *report, size_t repor
                 issues += validate_sherpa_path_option(app->sherpa_args, L"--funasr-nano-encoder-adaptor=", sherpa_dir, report, report_len);
                 issues += validate_sherpa_path_option(app->sherpa_args, L"--funasr-nano-llm=", sherpa_dir, report, report_len);
                 issues += validate_sherpa_path_option(app->sherpa_args, L"--funasr-nano-embedding=", sherpa_dir, report, report_len);
-                issues += validate_sherpa_path_option(app->sherpa_args, L"--funasr-nano-tokenizer=", sherpa_dir, report, report_len);
+            } else if (has_sense_voice) {
+                issues += validate_sherpa_path_option(app->sherpa_args, L"--sense-voice-model=", sherpa_dir, report, report_len);
             } else if (has_whisper_encoder || has_whisper_decoder) {
                 issues += validate_sherpa_path_option(app->sherpa_args, L"--whisper-encoder=", sherpa_dir, report, report_len);
                 issues += validate_sherpa_path_option(app->sherpa_args, L"--whisper-decoder=", sherpa_dir, report, report_len);
