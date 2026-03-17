@@ -48,6 +48,11 @@
 #define IDC_BTN_EXIT 2021
 #define IDC_CHECK_AUTO_STOP 2022
 #define IDC_EDIT_REPLACE_RULES 2023
+#define IDC_COMBO_MIC 2024
+#define IDC_EDIT_GEMINI_KEY 2025
+#define IDC_EDIT_GLADIA_KEY 2026
+#define IDC_CHECK_TRANSLATE 2027
+#define IDC_COMBO_LANG 2028
 
 #define IDC_FLOAT_TOGGLE 3001
 #define IDC_FLOAT_STATUS 3002
@@ -58,7 +63,8 @@
 typedef enum VoiceState {
     VOICE_IDLE = 0,
     VOICE_RECORDING = 1,
-    VOICE_TRANSCRIBING = 2
+    VOICE_TRANSCRIBING = 2,
+    VOICE_PAUSED = 3
 } VoiceState;
 
 typedef struct AppState {
@@ -66,14 +72,19 @@ typedef struct AppState {
     HWND main_hwnd;
     HWND float_hwnd;
     HWND api_edit;
+    HWND gemini_key_edit;
+    HWND gladia_key_edit;
     HWND hotkey_edit;
     HWND check_ctrl;
     HWND check_alt;
     HWND check_shift;
     HWND check_win;
     HWND backend_combo;
+    HWND mic_combo;
+    HWND lang_combo;
     HWND continuous_check;
     HWND auto_stop_check;
+    HWND translate_check;
     HWND threshold_edit;
     HWND silence_edit;
     HWND minrec_edit;
@@ -93,15 +104,20 @@ typedef struct AppState {
     wchar_t sherpa_exe[MAX_PATH];
     wchar_t sherpa_args[1024];
     wchar_t replace_rules[2048];
+    wchar_t gemini_key[256];
+    wchar_t gladia_key[256];
+    wchar_t target_lang[64];
 
     UINT hotkey_mods;
     UINT hotkey_vk;
+    UINT mic_device_id;
     BOOL hotkey_registered;
     BOOL tray_added;
     BOOL exit_requested;
     BOOL continuous_mode;
     BOOL auto_stop_enabled;
     BOOL stop_after_current;
+    BOOL translate_enabled;
 
     AsrBackendKind backend;
     AudioRecorderConfig recorder_config;
@@ -402,7 +418,8 @@ static void trim_wide_whitespace(wchar_t *text) {
         return;
     }
 
-    while (*start != L'\0' && iswspace(*start)) {
+    // 同时清理空格、制表符以及换行符
+    while (*start != L'\0' && (iswspace(*start) || *start == L'\r' || *start == L'\n')) {
         start++;
     }
 
@@ -411,7 +428,7 @@ static void trim_wide_whitespace(wchar_t *text) {
     }
 
     end = text + wcslen(text);
-    while (end > text && iswspace(end[-1])) {
+    while (end > text && (iswspace(end[-1]) || end[-1] == L'\r' || end[-1] == L'\n')) {
         end--;
     }
     *end = L'\0';
@@ -1521,7 +1538,8 @@ static void save_settings(AppState *app) {
              L"voice_threshold=%d\r\n"
              L"silence_timeout_ms=%u\r\n"
              L"min_record_ms=%u\r\n"
-             L"max_record_ms=%u\r\n",
+             L"max_record_ms=%u\r\n"
+             L"mic_device_id=%u\r\n",
              api_key,
              key_text,
              (unsigned)mods,
@@ -1535,7 +1553,8 @@ static void save_settings(AppState *app) {
              (int)app->recorder_config.voice_threshold,
              (unsigned)app->recorder_config.silence_timeout_ms,
              (unsigned)app->recorder_config.min_record_ms,
-             (unsigned)app->recorder_config.max_record_ms);
+             (unsigned)app->recorder_config.max_record_ms,
+             app->mic_device_id);
 
     bytes_needed = WideCharToMultiByte(CP_ACP, 0, content, -1, NULL, 0, NULL, NULL);
     if (bytes_needed <= 0) {
@@ -1579,6 +1598,7 @@ static void load_settings(AppState *app) {
     wchar_t silence_timeout_text[32] = L"1500";
     wchar_t min_record_text[32] = L"900";
     wchar_t max_record_text[32] = L"30000";
+    wchar_t mic_dev_text[32] = L"4294967295";
     wchar_t replace_rules_text[2048] = L"";
     wchar_t continuous_mode_text[16] = L"0";
     wchar_t auto_stop_text[16] = L"1";
@@ -1612,6 +1632,7 @@ static void load_settings(AppState *app) {
     GetPrivateProfileStringW(L"settings", L"silence_timeout_ms", L"1500", silence_timeout_text, _countof(silence_timeout_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"min_record_ms", L"900", min_record_text, _countof(min_record_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"max_record_ms", L"30000", max_record_text, _countof(max_record_text), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"mic_device_id", L"4294967295", mic_dev_text, _countof(mic_dev_text), app->config_path);
 
     mods = (UINT)wcstoul(mods_text, NULL, 10);
     if (mods == 0) {
@@ -1621,6 +1642,8 @@ static void load_settings(AppState *app) {
     app->backend = asr_parse_backend_name(backend_name);
     app->continuous_mode = wcstoul(continuous_mode_text, NULL, 10) ? TRUE : FALSE;
     app->auto_stop_enabled = wcstoul(auto_stop_text, NULL, 10) ? TRUE : FALSE;
+    app->mic_device_id = (UINT)wcstoul(mic_dev_text, NULL, 10);
+    app->recorder_config.device_id = app->mic_device_id;
     wcsncpy_s(app->replace_rules, _countof(app->replace_rules), replace_rules_text, _TRUNCATE);
     trim_wide_whitespace(app->replace_rules);
 
@@ -1769,6 +1792,10 @@ static void show_tray_menu(AppState *app) {
         return;
     }
 
+    // Win11 终极绝招：强推焦点并处理挂起的消息
+    SetForegroundWindow(app->main_hwnd);
+    Sleep(10); // 极小延迟等待系统 Shell 响应
+
     if (!GetCursorPos(&point)) {
         return;
     }
@@ -1778,10 +1805,22 @@ static void show_tray_menu(AppState *app) {
         return;
     }
 
-    AppendMenuW(menu, MF_STRING, ID_TRAY_OPEN, L"打开设置");
-    AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, L"退出程序");
-    SetForegroundWindow(app->main_hwnd);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON, point.x, point.y, 0, app->main_hwnd, NULL);
+    AppendMenuW(menu, MF_STRING, ID_TRAY_OPEN, L"显示设置窗口");
+    AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, L"完全退出程序");
+    
+    // 使用 TPM_RIGHTBUTTON | TPM_RETURNCMD 确保在 Win11 下最快响应
+    UINT selected = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, 
+                                   point.x, point.y, 0, app->main_hwnd, NULL);
+    
+    if (selected == ID_TRAY_OPEN) {
+        show_main_window(app);
+    } else if (selected == ID_TRAY_EXIT) {
+        app->exit_requested = TRUE;
+        DestroyWindow(app->main_hwnd);
+    }
+    
+    PostMessageW(app->main_hwnd, WM_NULL, 0, 0);
     DestroyMenu(menu);
 }
 
@@ -1789,10 +1828,9 @@ static void update_floating_position(AppState *app) {
     HWND foreground = NULL;
     DWORD thread_id = 0;
     GUITHREADINFO thread_info;
-    HWND focus = NULL;
-    RECT anchor;
+    POINT caret_pos = {0, 0};
     RECT work_area;
-    BOOL has_anchor = FALSE;
+    BOOL has_caret = FALSE;
     int x = 0;
     int y = 0;
     const int width = 200;
@@ -1802,10 +1840,21 @@ static void update_floating_position(AppState *app) {
         return;
     }
 
+    // 优化：空闲状态下不显示悬浮窗
+    if (app->state == VOICE_IDLE) {
+        if (IsWindowVisible(app->float_hwnd)) {
+            ShowWindow(app->float_hwnd, SW_HIDE);
+        }
+        return;
+    }
+
     foreground = GetForegroundWindow();
     if (!foreground || is_our_window(app, foreground)) {
-        ShowWindow(app->float_hwnd, SW_HIDE);
-        return;
+        // 如果当前焦点是我们自己的窗口，且不是录音状态，则隐藏
+        if (app->state == VOICE_IDLE) {
+            ShowWindow(app->float_hwnd, SW_HIDE);
+            return;
+        }
     }
 
     ZeroMemory(&thread_info, sizeof(thread_info));
@@ -1813,33 +1862,29 @@ static void update_floating_position(AppState *app) {
     thread_id = GetWindowThreadProcessId(foreground, NULL);
 
     if (thread_id != 0 && GetGUIThreadInfo(thread_id, &thread_info)) {
-        focus = thread_info.hwndFocus ? thread_info.hwndFocus : foreground;
-
-        if (is_our_window(app, focus)) {
-            ShowWindow(app->float_hwnd, SW_HIDE);
-            return;
-        }
-
-        if (IsWindow(focus)) {
-            has_anchor = GetWindowRect(focus, &anchor);
-            if (has_anchor) {
-                HWND root = GetAncestor(focus, GA_ROOT);
-                app->follow_target_window = root ? root : foreground;
+        if (thread_info.hwndFocus) {
+            // 尝试获取光标位置
+            if (thread_info.rcCaret.left != 0 || thread_info.rcCaret.top != 0) {
+                caret_pos.x = thread_info.rcCaret.left;
+                caret_pos.y = thread_info.rcCaret.bottom;
+                ClientToScreen(thread_info.hwndFocus, &caret_pos);
+                x = caret_pos.x;
+                y = caret_pos.y + 5; // 光标下方一点
+                has_caret = TRUE;
             }
         }
     }
 
-    if (!has_anchor) {
-        app->follow_target_window = foreground;
-        has_anchor = GetWindowRect(foreground, &anchor);
+    if (!has_caret) {
+        // 如果拿不到光标位置（比如在浏览器或某些特定编辑器中），回退到跟随窗口
+        RECT anchor;
+        if (GetWindowRect(foreground, &anchor)) {
+            x = anchor.left + 10;
+            y = anchor.bottom - height - 10;
+        } else {
+            return;
+        }
     }
-
-    if (!has_anchor) {
-        return;
-    }
-
-    x = anchor.right + 8;
-    y = anchor.top;
 
     if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work_area, 0)) {
         work_area.left = 0;
@@ -1848,19 +1893,11 @@ static void update_floating_position(AppState *app) {
         work_area.bottom = GetSystemMetrics(SM_CYSCREEN);
     }
 
-    if (x + width > work_area.right) {
-        x = anchor.left - width - 8;
-    }
-    if (x < work_area.left) {
-        x = work_area.left;
-    }
-
-    if (y + height > work_area.bottom) {
-        y = work_area.bottom - height;
-    }
-    if (y < work_area.top) {
-        y = work_area.top;
-    }
+    // 边界检查，防止悬浮窗跑出屏幕
+    if (x + width > work_area.right) x = work_area.right - width;
+    if (x < work_area.left) x = work_area.left;
+    if (y + height > work_area.bottom) y = work_area.bottom - height;
+    if (y < work_area.top) y = work_area.top;
 
     SetWindowPos(app->float_hwnd, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
@@ -1977,6 +2014,8 @@ static BOOL start_transcribing(AppState *app, HWND target_window) {
 
 static BOOL start_recording_session(AppState *app, HWND target_hint) {
     HWND target = target_hint;
+    UINT final_device_id = WAVE_MAPPER;
+    wchar_t selected_name[256] = L"";
 
     if (!app) {
         return FALSE;
@@ -1986,43 +2025,95 @@ static BOOL start_recording_session(AppState *app, HWND target_hint) {
         target = app->follow_target_window;
     }
 
+    // 绝不糊弄方案：根据选中的下拉框名称，在系统中实时反向查找真实的物理 ID
+    if (app->mic_combo) {
+        LRESULT sel = SendMessageW(app->mic_combo, CB_GETCURSEL, 0, 0);
+        if (sel != CB_ERR && sel > 0) {
+            SendMessageW(app->mic_combo, CB_GETLBTEXT, (WPARAM)sel, (LPARAM)selected_name);
+            
+            // 遍历所有物理设备，寻找名称匹配的那一个
+            UINT num_devs = waveInGetNumDevs();
+            WAVEINCAPSW caps;
+            BOOL found = FALSE;
+            for (UINT i = 0; i < num_devs; ++i) {
+                if (waveInGetDevCapsW(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
+                    if (wcscmp(caps.szPname, selected_name) == 0) {
+                        final_device_id = i;
+                        found = TRUE;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                // 如果找不到，极有可能是索引发生了变化，回退到 WAVE_MAPPER 保护程序不崩溃
+                final_device_id = WAVE_MAPPER;
+            }
+        } else {
+            final_device_id = WAVE_MAPPER;
+        }
+    }
+    
+    app->recorder_config.device_id = final_device_id;
+
     if (audio_start_recording(&app->recorder_config)) {
         app->target_window = target;
         app->state = VOICE_RECORDING;
         set_status(app, L"录音中...");
         update_float_button(app);
-        app_log_line(app, "recording start target=0x%p", target);
+        
+        char *mic_name_utf8 = wide_to_utf8_alloc(selected_name[0] ? selected_name : L"WAVE_MAPPER");
+        app_log_line(app, "PHYSICAL LOCK recording start target=0x%p device=[%s] phys_id=%u", 
+                     target, mic_name_utf8 ? mic_name_utf8 : "unknown", final_device_id);
+        free(mic_name_utf8);
         return TRUE;
     }
 
     set_status(app, L"启动录音失败。");
-    app_log_line(app, "recording start failed");
+    app_log_line(app, "recording start failed id=%u", final_device_id);
     return FALSE;
 }
 
 static BOOL stop_recording_and_transcribe(AppState *app, BOOL auto_stop) {
+    BOOL save_ok = FALSE;
+    BOOL should_continue_recording = FALSE;
+
     if (!app) {
         return FALSE;
     }
 
-    if (!auto_stop) {
-        app->stop_after_current = TRUE;
+    // 只有在自动断句且开启了连续模式时，才保持录音设备开启
+    if (auto_stop && app->continuous_mode && !app->stop_after_current && !app->exit_requested) {
+        should_continue_recording = TRUE;
     }
 
-    if (!audio_stop_and_save(app->wav_path)) {
-        app->state = VOICE_IDLE;
+    if (should_continue_recording) {
+        save_ok = audio_save_chunk_and_continue(app->wav_path);
+    } else {
+        save_ok = audio_stop_and_save(app->wav_path);
+        if (!auto_stop) {
+            app->stop_after_current = TRUE;
+        }
+    }
+
+    if (!save_ok) {
+        if (!should_continue_recording) {
+            app->state = VOICE_IDLE;
+        }
         set_status(app, L"录音保存失败。");
         update_float_button(app);
-        app_log_line(app, "recording stop/save failed");
+        app_log_line(app, "recording save failed (continue=%d)", should_continue_recording);
         return FALSE;
     }
 
     app_log_line(app,
-                 "recording stop saved reason=%s",
-                 auto_stop ? "auto-silence" : "manual");
+                 "recording segment saved reason=%s continue=%d",
+                 auto_stop ? "auto-silence" : "manual",
+                 should_continue_recording);
 
     if (!start_transcribing(app, app->target_window)) {
-        app->state = VOICE_IDLE;
+        if (!should_continue_recording) {
+            app->state = VOICE_IDLE;
+        }
         update_float_button(app);
         app_log_line(app, "transcribe start failed");
         return FALSE;
@@ -2060,13 +2151,7 @@ static void poll_recording_runtime(AppState *app) {
                          (unsigned long)status.recorded_bytes);
 
             if (app->continuous_mode) {
-                app->continuous_mode = FALSE;
-                if (app->continuous_check) {
-                    set_checked(app->continuous_check, FALSE);
-                }
-                save_settings(app);
-                set_status(app, L"未检测到清晰语音，已暂停自动监听。");
-                app_log_line(app, "continuous mode disabled after no-voice auto-stop");
+                start_recording_session(app, GetForegroundWindow());
             }
             return;
         }
@@ -2096,7 +2181,7 @@ static void toggle_recording(AppState *app, HWND target_hint) {
             }
             save_settings(app);
         }
-        set_status(app, L"已请求停止：当前识别完成后不再自动继续。");
+        set_status(app, L"已请求停止：当前识别完成后不再自动继续处理。");
         app_log_line(app, "stop requested while transcribing");
         return;
     }
@@ -2112,14 +2197,16 @@ static void toggle_recording(AppState *app, HWND target_hint) {
 
 static void on_transcribe_done(AppState *app, TranscribeResult *result) {
     BOOL should_restart = FALSE;
+    BOOL was_continuing = (app->state == VOICE_TRANSCRIBING && audio_is_recording());
 
     if (!app) {
         return;
     }
 
-    should_restart = app->continuous_mode && !app->exit_requested && !app->stop_after_current;
+    // 如果之前已经通过 continue 模式保持了录音，则不需要 restart
+    should_restart = app->continuous_mode && !app->exit_requested && !app->stop_after_current && !was_continuing;
 
-    app->state = VOICE_IDLE;
+    app->state = was_continuing ? VOICE_RECORDING : VOICE_IDLE;
     update_float_button(app);
 
     if (!result) {
@@ -2156,27 +2243,30 @@ static void on_transcribe_done(AppState *app, TranscribeResult *result) {
                 app_log_line(app, "transcribe dropped after replace rules");
             } else {
                 apply_simple_sherpa_punctuation(app, &result->text);
-                HWND target = result->target_window;
+                
+                // 优化：实时获取当前最前台窗口，不再强制跳回录音前的旧窗口
+                HWND current_foreground = GetForegroundWindow();
+                HWND target = current_foreground;
 
-                if (!target || !IsWindow(target) || is_our_window(app, target)) {
-                    target = app->follow_target_window;
+                // 如果当前前台是我们自己的窗口，则尝试使用之前记录的目标窗口
+                if (!target || is_our_window(app, target)) {
+                    target = result->target_window ? result->target_window : app->follow_target_window;
                 }
 
-                if (target && IsWindow(target)) {
+                if (target && IsWindow(target) && !is_our_window(app, target)) {
                     SetForegroundWindow(target);
-                    Sleep(40);
+                    Sleep(20); // 稍微等待焦点稳定
                 }
 
                 if (injector_paste_utf8(result->text)) {
-                    set_status(app, L"已粘贴到目标输入框。");
-                    app_log_line(app, "paste success text_len=%u", (unsigned)strlen(result->text));
+                    set_status(app, L"已粘贴。");
+                    app_log_line(app, "paste success text_len=%u to HWND=0x%p", (unsigned)strlen(result->text), target);
                 } else {
-                    set_status(app, L"粘贴失败，请保持焦点在目标输入框。");
+                    set_status(app, L"粘贴失败，请保持光标在目标输入框。");
                     app_log_line(app, "paste failed text_len=%u", (unsigned)strlen(result->text));
                 }
             }
         }
-
     }
 
     if (result->text) {
@@ -2198,7 +2288,7 @@ static void on_transcribe_done(AppState *app, TranscribeResult *result) {
     app->stop_after_current = FALSE;
 
     if (should_restart && app->state == VOICE_IDLE) {
-        start_recording_session(app, app->follow_target_window);
+        start_recording_session(app, GetForegroundWindow());
     }
 }
 
@@ -2208,20 +2298,58 @@ static void apply_font(HWND control, HFONT font) {
     }
 }
 
+static void refresh_mic_list(AppState *app) {
+    UINT num_devs = waveInGetNumDevs();
+    WAVEINCAPSW caps;
+    UINT i;
+
+    if (!app || !app->mic_combo) return;
+
+    SendMessageW(app->mic_combo, CB_RESETCONTENT, 0, 0);
+    SendMessageW(app->mic_combo, CB_ADDSTRING, 0, (LPARAM)L"系统默认录音设备");
+
+    for (i = 0; i < num_devs; ++i) {
+        if (waveInGetDevCapsW(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
+            SendMessageW(app->mic_combo, CB_ADDSTRING, 0, (LPARAM)caps.szPname);
+        }
+    }
+
+    if (app->mic_device_id == WAVE_MAPPER) {
+        SendMessageW(app->mic_combo, CB_SETCURSEL, 0, 0);
+    } else {
+        if (app->mic_device_id < num_devs) {
+            SendMessageW(app->mic_combo, CB_SETCURSEL, (WPARAM)app->mic_device_id + 1, 0);
+        } else {
+            SendMessageW(app->mic_combo, CB_SETCURSEL, 0, 0);
+            app->mic_device_id = WAVE_MAPPER;
+        }
+    }
+}
+
 static void create_main_controls(AppState *app) {
     HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
     HWND label = NULL;
     HWND button = NULL;
 
-    label = CreateWindowW(L"STATIC", L"Groq API Key：", WS_CHILD | WS_VISIBLE,
-                          20, 16, 120, 20, app->main_hwnd, NULL, app->instance, NULL);
+    label = CreateWindowW(L"STATIC", L"云端 API Key：", WS_CHILD | WS_VISIBLE,
+                          20, 16, 100, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->api_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                                     WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_PASSWORD,
-                                    140, 12, 640, 24, app->main_hwnd,
+                                    120, 12, 300, 24, app->main_hwnd,
                                     (HMENU)(INT_PTR)IDC_EDIT_API, app->instance, NULL);
     apply_font(app->api_edit, font);
+
+    label = CreateWindowW(L"STATIC", L"录音设备：", WS_CHILD | WS_VISIBLE,
+                          440, 16, 80, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+
+    app->mic_combo = CreateWindowW(L"COMBOBOX", L"",
+                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+                                   520, 12, 320, 200, app->main_hwnd,
+                                   (HMENU)(INT_PTR)IDC_COMBO_MIC, app->instance, NULL);
+    apply_font(app->mic_combo, font);
 
     label = CreateWindowW(L"STATIC", L"识别后端：", WS_CHILD | WS_VISIBLE,
                           20, 50, 100, 20, app->main_hwnd, NULL, app->instance, NULL);
@@ -2229,11 +2357,13 @@ static void create_main_controls(AppState *app) {
 
     app->backend_combo = CreateWindowW(L"COMBOBOX", L"",
                                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-                                       140, 46, 170, 200, app->main_hwnd,
+                                       120, 46, 170, 200, app->main_hwnd,
                                        (HMENU)(INT_PTR)IDC_COMBO_BACKEND, app->instance, NULL);
     apply_font(app->backend_combo, font);
-    SendMessageW(app->backend_combo, CB_ADDSTRING, 0, (LPARAM)L"Groq 云端");
-    SendMessageW(app->backend_combo, CB_ADDSTRING, 0, (LPARAM)L"Sherpa 本地");
+    SendMessageW(app->backend_combo, CB_ADDSTRING, 0, (LPARAM)L"Groq (需 Key)");
+    SendMessageW(app->backend_combo, CB_ADDSTRING, 0, (LPARAM)L"Sherpa (本地)");
+
+    refresh_mic_list(app);
 
     app->continuous_check = CreateWindowW(L"BUTTON",
                                           L"自动监听（识别完自动继续）",
@@ -2544,6 +2674,33 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
+        case IDC_CHECK_CONTINUOUS:
+            if (HIWORD(wParam) == BN_CLICKED) {
+                app->continuous_mode = is_checked(app->continuous_check);
+                app_log_line(app, "continuous_mode toggled to %d", app->continuous_mode);
+                save_settings(app);
+            }
+            return 0;
+        case IDC_CHECK_AUTO_STOP:
+            if (HIWORD(wParam) == BN_CLICKED) {
+                app->auto_stop_enabled = is_checked(app->auto_stop_check);
+                app_log_line(app, "auto_stop toggled to %d", app->auto_stop_enabled);
+                save_settings(app);
+            }
+            return 0;
+        case IDC_COMBO_MIC:
+            if (HIWORD(wParam) == CBN_SELCHANGE) {
+                LRESULT sel = SendMessageW(app->mic_combo, CB_GETCURSEL, 0, 0);
+                if (sel == 0) {
+                    app->mic_device_id = WAVE_MAPPER;
+                } else {
+                    app->mic_device_id = (UINT)(sel - 1);
+                }
+                app->recorder_config.device_id = app->mic_device_id;
+                app_log_line(app, "mic_device_id changed to %u", app->mic_device_id);
+                save_settings(app);
+            }
+            return 0;
         case IDC_BTN_APPLY:
             if (apply_hotkey_from_ui(app, FALSE)) {
                 apply_runtime_settings_from_ui(app, TRUE);
@@ -2596,13 +2753,17 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         on_transcribe_done(app, (TranscribeResult *)lParam);
         return 0;
     case WMAPP_TRAYICON:
-        if (lParam == WM_LBUTTONUP || lParam == WM_LBUTTONDBLCLK) {
-            show_main_window(app);
-            return 0;
-        }
-        if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) {
-            show_tray_menu(app);
-            return 0;
+        {
+            UINT tray_msg = LOWORD(lParam);
+            // 增强：捕获所有可能的右键点击消息
+            if (tray_msg == WM_CONTEXTMENU || tray_msg == WM_RBUTTONUP || tray_msg == WM_RBUTTONDOWN) {
+                show_tray_menu(app);
+                return 0;
+            }
+            if (tray_msg == NIN_SELECT || tray_msg == WM_LBUTTONUP || tray_msg == WM_LBUTTONDBLCLK) {
+                show_main_window(app);
+                return 0;
+            }
         }
         break;
     case WM_CLOSE:

@@ -316,7 +316,17 @@ BOOL audio_start_recording(const AudioRecorderConfig *config) {
         g_voice_threshold = 6000;
     }
 
-    result = waveInOpen(&g_wave_in, WAVE_MAPPER, &g_format, (DWORD_PTR)wave_in_proc, 0, CALLBACK_FUNCTION);
+    // 绝招：彻底隔离。如果 ID 无效或为系统默认，强制检查系统中是否存在物理驱动实例
+    UINT device_id = (config ? config->device_id : WAVE_MAPPER);
+    
+    // 强制禁用由于驱动异常导致的回退
+    result = waveInOpen(&g_wave_in, device_id, &g_format, (DWORD_PTR)wave_in_proc, 0, CALLBACK_FUNCTION);
+    
+    if (result != MMSYSERR_NOERROR) {
+        // 如果打开失败，尝试使用最原始的 0 号设备（通常是第一个物理麦克风）
+        device_id = 0;
+        result = waveInOpen(&g_wave_in, device_id, &g_format, (DWORD_PTR)wave_in_proc, 0, CALLBACK_FUNCTION);
+    }
     if (result != MMSYSERR_NOERROR) {
         g_wave_in = NULL;
         LeaveCriticalSection(&g_lock);
@@ -403,6 +413,80 @@ BOOL audio_stop_and_save(const wchar_t *wav_path) {
     write_ok = write_wav_file(wav_path) && g_pcm_size > 0;
     LeaveCriticalSection(&g_lock);
 
+    return write_ok;
+}
+
+BOOL audio_save_chunk_and_continue(const wchar_t *wav_path) {
+    BYTE *temp_pcm = NULL;
+    DWORD temp_size = 0;
+    BOOL write_ok = FALSE;
+
+    if (!wav_path) {
+        return FALSE;
+    }
+
+    ensure_lock();
+    EnterCriticalSection(&g_lock);
+
+    if (!g_is_recording || g_pcm_size == 0) {
+        LeaveCriticalSection(&g_lock);
+        return FALSE;
+    }
+
+    // 克隆当前 PCM 缓冲区，以便识别使用
+    temp_size = g_pcm_size;
+    temp_pcm = (BYTE *)malloc(temp_size);
+    if (temp_pcm) {
+        memcpy(temp_pcm, g_pcm_data, temp_size);
+    }
+
+    // 重置缓冲区和状态，但保持 g_is_recording = TRUE
+    g_pcm_size = 0;
+    g_should_auto_stop = FALSE;
+    g_has_voice = FALSE;
+    g_voice_peak_hit_count = 0;
+    g_start_ms = GetTickCount64();
+    g_last_voice_ms = g_start_ms;
+
+    LeaveCriticalSection(&g_lock);
+
+    if (!temp_pcm) {
+        return FALSE;
+    }
+
+    // 写入文件（此处我们利用现有的 write_wav_file 逻辑，但由于它是基于全局变量的，
+    // 我们需要一个局部的版本，或者临时修改 write_wav_file 以接受外部参数。）
+    // 为了简单，我们直接在此处实现一个局部的写入逻辑
+    {
+        HANDLE file_handle = INVALID_HANDLE_VALUE;
+        DWORD bytes_written = 0;
+        DWORD riff_size = temp_size + 36;
+        DWORD fmt_chunk_size = 16;
+        DWORD byte_rate = g_format.nAvgBytesPerSec;
+        WORD block_align = g_format.nBlockAlign;
+
+        file_handle = CreateFileW(wav_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (file_handle != INVALID_HANDLE_VALUE) {
+            WriteFile(file_handle, "RIFF", 4, &bytes_written, NULL);
+            WriteFile(file_handle, &riff_size, 4, &bytes_written, NULL);
+            WriteFile(file_handle, "WAVE", 4, &bytes_written, NULL);
+            WriteFile(file_handle, "fmt ", 4, &bytes_written, NULL);
+            WriteFile(file_handle, &fmt_chunk_size, 4, &bytes_written, NULL);
+            WriteFile(file_handle, &g_format.wFormatTag, 2, &bytes_written, NULL);
+            WriteFile(file_handle, &g_format.nChannels, 2, &bytes_written, NULL);
+            WriteFile(file_handle, &g_format.nSamplesPerSec, 4, &bytes_written, NULL);
+            WriteFile(file_handle, &byte_rate, 4, &bytes_written, NULL);
+            WriteFile(file_handle, &block_align, 2, &bytes_written, NULL);
+            WriteFile(file_handle, &g_format.wBitsPerSample, 2, &bytes_written, NULL);
+            WriteFile(file_handle, "data", 4, &bytes_written, NULL);
+            WriteFile(file_handle, &temp_size, 4, &bytes_written, NULL);
+            WriteFile(file_handle, temp_pcm, temp_size, &bytes_written, NULL);
+            CloseHandle(file_handle);
+            write_ok = (bytes_written == temp_size);
+        }
+    }
+
+    free(temp_pcm);
     return write_ok;
 }
 

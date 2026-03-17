@@ -4,6 +4,7 @@
 #include <windows.h>
 
 typedef struct AudioRecorderConfig {
+	UINT device_id; // 新增：设备 ID
 	DWORD sample_rate;
 	WORD channels;
 	WORD bits_per_sample;
@@ -25,6 +26,7 @@ typedef struct AudioRuntimeStatus {
 
 BOOL audio_start_recording(const AudioRecorderConfig *config);
 BOOL audio_stop_and_save(const wchar_t *wav_path);
+BOOL audio_save_chunk_and_continue(const wchar_t *wav_path);
 void audio_abort(void);
 BOOL audio_is_recording(void);
 BOOL audio_get_runtime_status(AudioRuntimeStatus *out_status);

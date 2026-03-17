@@ -450,6 +450,10 @@ BOOL sherpa_transcribe_wav_cli(const wchar_t *wav_path,
         return FALSE;
     }
 
+    // 调试：记录启动参数，排查乱码和路径长度问题
+    // 注意：这里由于是 asr_backend，不直接引用 app 指针，建议此处根据需要打印或返回
+    // 我们暂时在 CreateProcessW 处打印
+
     ZeroMemory(&sec_attr, sizeof(sec_attr));
     sec_attr.nLength = sizeof(sec_attr);
     sec_attr.bInheritHandle = TRUE;
