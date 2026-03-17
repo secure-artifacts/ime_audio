@@ -6,6 +6,7 @@
 #include <wctype.h>
 #include <windows.h>
 #include <shellapi.h>
+#include <shlobj.h>
 
 #include "asr_backend.h"
 #include "audio_recorder.h"
@@ -187,32 +188,17 @@ static BOOL build_temp_wav_path(wchar_t *out_path, DWORD out_path_size) {
 }
 
 static BOOL build_config_path(wchar_t *out_path, DWORD out_path_size) {
-    wchar_t module_path[MAX_PATH];
-    DWORD len = GetModuleFileNameW(NULL, module_path, MAX_PATH);
-    BOOL slash_found = FALSE;
-    DWORD i = 0;
+    wchar_t appdata[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata))) {
+        wchar_t dir_path[MAX_PATH];
+        swprintf(dir_path, MAX_PATH, L"%ls\\VoiceIME", appdata);
+        CreateDirectoryW(dir_path, NULL);
 
-    if (len == 0 || len >= MAX_PATH) {
-        return FALSE;
-    }
-
-    for (i = len; i > 0; --i) {
-        if (module_path[i - 1] == L'\\') {
-            module_path[i] = L'\0';
-            slash_found = TRUE;
-            break;
+        if (swprintf(out_path, out_path_size, L"%ls\\VoiceIME\\voice_ime.ini", appdata) > 0) {
+            return TRUE;
         }
     }
-
-    if (!slash_found) {
-        return FALSE;
-    }
-
-    if (swprintf(out_path, out_path_size, L"%lsvoice_ime.ini", module_path) < 0) {
-        return FALSE;
-    }
-
-    return TRUE;
+    return FALSE;
 }
 
 static BOOL build_log_path(const wchar_t *config_path, wchar_t *out_path, DWORD out_path_size) {
@@ -1104,6 +1090,7 @@ static void set_default_recorder_config(AppState *app) {
 }
 
 static void try_auto_fill_sherpa_defaults(AppState *app) {
+    wchar_t exe_path[MAX_PATH];
     wchar_t app_dir[MAX_PATH];
     wchar_t parent_dir[MAX_PATH];
     wchar_t grandparent_dir[MAX_PATH];
@@ -1122,7 +1109,8 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
     parent_dir[0] = L'\0';
     grandparent_dir[0] = L'\0';
 
-    extract_parent_dir(app->config_path, app_dir, _countof(app_dir));
+    GetModuleFileNameW(NULL, exe_path, MAX_PATH);
+    extract_parent_dir(exe_path, app_dir, _countof(app_dir));
     if (app_dir[0] != L'\0') {
         extract_parent_dir(app_dir, parent_dir, _countof(parent_dir));
     }
@@ -1511,6 +1499,7 @@ static void run_self_check(AppState *app, BOOL popup) {
 }
 
 static BOOL launch_sherpa_installer(AppState *app) {
+    wchar_t exe_path[MAX_PATH];
     wchar_t app_dir[MAX_PATH];
     wchar_t parent_dir[MAX_PATH];
     wchar_t grandparent_dir[MAX_PATH];
@@ -1536,7 +1525,8 @@ static BOOL launch_sherpa_installer(AppState *app) {
         return TRUE;
     }
 
-    extract_parent_dir(app->config_path, app_dir, _countof(app_dir));
+    GetModuleFileNameW(NULL, exe_path, MAX_PATH);
+    extract_parent_dir(exe_path, app_dir, _countof(app_dir));
     if (app_dir[0] == L'\0') {
         set_status(app, L"无法定位程序目录。");
         return FALSE;

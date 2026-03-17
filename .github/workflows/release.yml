@@ -25,13 +25,18 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
 
+      - name: Build Installer (Inno Setup)
+        run: iscc installer.iss
+
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: 'build/Release/voice_ime.exe'
+          subject-path: 'build/Installer/VoiceIME_Setup.exe'
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: 'build/Release/voice_ime.exe'
+          files: |
+            build/Release/voice_ime.exe
+            build/Installer/VoiceIME_Setup.exe
           generate_release_notes: true
