@@ -2829,6 +2829,11 @@ static void create_main_controls(AppState *app) {
     apply_font(app->gemini_prompt_edit, font);
     // -- 结束 --
 
+    // Add a button to auto-detect/switch models
+    HWND btn_switch_model = CreateWindowW(L"BUTTON", L"自动检测本地模型 (自动扫描 FunASR/Paraformer)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                          140, 215, 340, 24, app->main_hwnd, (HMENU)(INT_PTR)2040, app->instance, NULL);
+    apply_font(btn_switch_model, font);
+
     label = CreateWindowW(L"STATIC", L"Sherpa 程序：", WS_CHILD | WS_VISIBLE,
                           20, 250, 110, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
