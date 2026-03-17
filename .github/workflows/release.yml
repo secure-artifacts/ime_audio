@@ -1,0 +1,37 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure CMake
+        run: cmake -S . -B build -G "Visual Studio 17 2022"
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'build/Release/voice_ime.exe'
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: 'build/Release/voice_ime.exe'
+          generate_release_notes: true
