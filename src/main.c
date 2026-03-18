@@ -193,16 +193,15 @@ static BOOL build_temp_wav_path(wchar_t *out_path, DWORD out_path_size) {
     return TRUE;
 }
 
-static BOOL build_config_path(wchar_t *out_path, DWORD out_path_size) {
-    wchar_t appdata[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata))) {
-        wchar_t dir_path[MAX_PATH];
-        swprintf(dir_path, MAX_PATH, L"%ls\\VoiceIME", appdata);
-        CreateDirectoryW(dir_path, NULL);
+static void extract_parent_dir(const wchar_t *path, wchar_t *out_dir, size_t out_len);
 
-        if (swprintf(out_path, out_path_size, L"%ls\\VoiceIME\\voice_ime.ini", appdata) > 0) {
-            return TRUE;
-        }
+static BOOL build_config_path(wchar_t *out_path, DWORD out_path_size) {
+    wchar_t exe_path[MAX_PATH];
+    wchar_t app_dir[MAX_PATH];
+    GetModuleFileNameW(NULL, exe_path, MAX_PATH);
+    extract_parent_dir(exe_path, app_dir, _countof(app_dir));
+    if (swprintf(out_path, out_path_size, L"%ls\\voice_ime.ini", app_dir) > 0) {
+        return TRUE;
     }
     return FALSE;
 }
