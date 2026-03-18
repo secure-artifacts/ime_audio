@@ -1177,9 +1177,9 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
         wcsncpy_s(app->sherpa_exe, _countof(app->sherpa_exe), exe_path, _TRUNCATE);
         swprintf(app->sherpa_args,
                  _countof(app->sherpa_args),
-                 L"--tokens=\"%ls --paraformer=\"%ls --num-threads=2 --decoding-method=greedy_search",
-                 tokens_path,
-                 model_path);
+                 L"--paraformer=%ls --tokens=%ls --num-threads=2 --decoding-method=greedy_search",
+                 model_path,
+                 tokens_path);
 
         app_log_line(app, "auto-filled sherpa defaults from local third_party folder");
         return;
