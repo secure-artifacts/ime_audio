@@ -2159,7 +2159,19 @@ static void update_floating_position(AppState *app) {
     if (y + height > work_area.bottom) y = work_area.bottom - height;
     if (y < work_area.top) y = work_area.top;
 
-    SetWindowPos(app->float_hwnd, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    RECT current_rect;
+    BOOL pos_changed = TRUE;
+    if (GetWindowRect(app->float_hwnd, &current_rect)) {
+        if (current_rect.left == x && current_rect.top == y &&
+            (current_rect.right - current_rect.left) == width &&
+            (current_rect.bottom - current_rect.top) == height) {
+            pos_changed = FALSE;
+        }
+    }
+
+    if (pos_changed || !IsWindowVisible(app->float_hwnd)) {
+        SetWindowPos(app->float_hwnd, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    }
 }
 
 static DWORD WINAPI transcribe_thread_proc(LPVOID param) {
@@ -3470,7 +3482,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
         MessageBoxW(app.main_hwnd, L"托盘图标添加失败。", APP_TITLE, MB_ICONWARNING);
     }
 
-    SetTimer(app.main_hwnd, TIMER_FOLLOW_INPUT, 220, NULL);
+    SetTimer(app.main_hwnd, TIMER_FOLLOW_INPUT, 16, NULL);
     run_self_check(&app, FALSE);
     update_float_button(&app);
 
