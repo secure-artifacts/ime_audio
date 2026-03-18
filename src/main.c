@@ -1178,7 +1178,7 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
         wcsncpy_s(app->sherpa_exe, _countof(app->sherpa_exe), exe_path, _TRUNCATE);
         swprintf(app->sherpa_args,
                  _countof(app->sherpa_args),
-                 L"--tokens=\"%ls\" --paraformer=\"%ls\" --num-threads=2 --decoding-method=greedy_search",
+                 L"--tokens=\"%ls --paraformer=\"%ls --num-threads=2 --decoding-method=greedy_search",
                  tokens_path,
                  model_path);
 
@@ -1591,11 +1591,11 @@ static void apply_model_selection(AppState *app, int sel) {
     wcsncpy_s(app->sherpa_exe, _countof(app->sherpa_exe), sherpa_exe, _TRUNCATE);
     
     if (sel == 0) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--tokens=\"%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt\" --paraformer=\"%ls\\third_party\\sherpa\\models\\paraformer-zh\\model.int8.onnx\" --num-threads=2 --decoding-method=greedy_search", correct_root, correct_root);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--tokens=%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt --paraformer=%ls\\third_party\\sherpa\\models\\paraformer-zh\\model.int8.onnx --num-threads=2 --decoding-method=greedy_search", correct_root, correct_root);
     } else if (sel == 1) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--tokens=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\tokens.txt\" --encoder=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\encoder.int8.onnx\" --decoder=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\decoder.onnx\" --joiner=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\joiner.int8.onnx\" --num-threads=2 --decoding-method=modified_beam_search", correct_root, correct_root, correct_root, correct_root);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--tokens=%ls\\third_party\\sherpa\\models\\zipformer-zh\\tokens.txt --encoder=%ls\\third_party\\sherpa\\models\\zipformer-zh\\encoder.int8.onnx --decoder=%ls\\third_party\\sherpa\\models\\zipformer-zh\\decoder.onnx --joiner=%ls\\third_party\\sherpa\\models\\zipformer-zh\\joiner.int8.onnx --num-threads=2 --decoding-method=modified_beam_search", correct_root, correct_root, correct_root, correct_root);
     } else if (sel == 2) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--funasr-nano-encoder-adaptor=\"%ls\\third_party\\sherpa\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"%ls\\third_party\\sherpa\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"%ls\\third_party\\sherpa\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"%ls\\third_party\\sherpa\\models\\funasr\\Qwen3-0.6B\" --tokens=\"%ls\\third_party\\sherpa\\models\\funasr\\tokens.txt\" --num-threads=2", correct_root, correct_root, correct_root, correct_root, correct_root);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--funasr-nano-encoder-adaptor=%ls\\third_party\\sherpa\\models\\funasr\\encoder_adaptor.int8.onnx --funasr-nano-llm=%ls\\third_party\\sherpa\\models\\funasr\\llm.int8.onnx --funasr-nano-embedding=%ls\\third_party\\sherpa\\models\\funasr\\embedding.int8.onnx --funasr-nano-tokenizer=%ls\\third_party\\sherpa\\models\\funasr\\Qwen3-0.6B --tokens=%ls\\third_party\\sherpa\\models\\funasr\\tokens.txt --num-threads=2", correct_root, correct_root, correct_root, correct_root, correct_root);
     }
     
 
@@ -1619,7 +1619,7 @@ static void apply_model_selection(AppState *app, int sel) {
             wchar_t append_args[1024];
             wchar_t bpe_path[MAX_PATH];
             swprintf(bpe_path, _countof(bpe_path), L"%ls\\third_party\\sherpa\\models\\zipformer-zh\\bpe.model", correct_root);
-            swprintf(append_args, _countof(append_args), L" --hotwords-file=\"%ls\" --hotwords-score=1.5 --bpe-vocab=\"%ls\" --modeling-unit=cjkchar+bpe", hotwords_path, bpe_path);
+            swprintf(append_args, _countof(append_args), L" --hotwords-file=%ls --hotwords-score=1.5 --bpe-vocab=%ls --modeling-unit=cjkchar+bpe", hotwords_path, bpe_path);
             wcscat_s(app->sherpa_args, _countof(app->sherpa_args), append_args);
         } else if (sel == 2) { // FunASR
             wchar_t append_args[1024];
@@ -1642,7 +1642,7 @@ static void apply_model_selection(AppState *app, int sel) {
                 }
                 fclose(f);
                 if (all_words[0] != L'\0') {
-                    swprintf(append_args, _countof(append_args), L" --funasr-nano-hotwords=\"%ls\"", all_words);
+                    swprintf(append_args, _countof(append_args), L" --funasr-nano-hotwords=%ls", all_words);
                     wcscat_s(app->sherpa_args, _countof(app->sherpa_args), append_args);
                 }
             }
