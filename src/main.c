@@ -1538,41 +1538,72 @@ static void run_self_check(AppState *app, BOOL popup) {
 static void apply_model_selection(AppState *app, int sel) {
     wchar_t exe_path[MAX_PATH];
     wchar_t app_dir[MAX_PATH];
+    wchar_t parent_dir[MAX_PATH];
+    wchar_t grandparent_dir[MAX_PATH];
     wchar_t script_path[2048];
     wchar_t params[4096];
+    const wchar_t *roots[3];
+    int i;
     const wchar_t *work_dir = NULL;
     HINSTANCE shell_result;
     
     GetModuleFileNameW(NULL, exe_path, MAX_PATH);
     extract_parent_dir(exe_path, app_dir, _countof(app_dir));
     
-    swprintf(script_path, _countof(script_path), L"%ls\\scripts\\install_model.bat", app_dir);
-    
+    parent_dir[0] = L'\0';
+    grandparent_dir[0] = L'\0';
+    if (app_dir[0] != L'\0') {
+        extract_parent_dir(app_dir, parent_dir, _countof(parent_dir));
+    }
+    if (parent_dir[0] != L'\0') {
+        extract_parent_dir(parent_dir, grandparent_dir, _countof(grandparent_dir));
+    }
+
+    roots[0] = app_dir;
+    roots[1] = parent_dir;
+    roots[2] = grandparent_dir;
+
+    // Find the correct root that contains scripts\install_model.bat
+    wchar_t correct_root[MAX_PATH] = {0};
+    for (i = 0; i < 3; ++i) {
+        if (!roots[i] || roots[i][0] == L'\0') continue;
+        swprintf(script_path, _countof(script_path), L"%ls\\scripts\\install_model.bat", roots[i]);
+        if (file_exists_non_dir(script_path)) {
+            wcsncpy_s(correct_root, _countof(correct_root), roots[i], _TRUNCATE);
+            break;
+        }
+    }
+
+    if (correct_root[0] == L'\0') {
+        // If not found, fallback to the grandparent directory (assuming we run in build/Release)
+        wcsncpy_s(correct_root, _countof(correct_root), grandparent_dir, _TRUNCATE);
+        swprintf(script_path, _countof(script_path), L"%ls\\scripts\\install_model.bat", correct_root);
+    }
+
     const wchar_t* model_id = L"paraformer";
     if (sel == 1) model_id = L"zipformer";
     if (sel == 2) model_id = L"funasr";
 
     swprintf(params, _countof(params), L"/c \"%ls\" %ls", script_path, model_id);
-    
     shell_result = ShellExecuteW(app->main_hwnd, L"open", L"cmd.exe", params, NULL, SW_SHOWNORMAL);
     
     if ((INT_PTR)shell_result <= 32) {
-        set_status(app, L"启动下载脚本失败。");
+        set_status(app, L"启动下载脚本失败，请检查 scripts 目录是否存在。");
         return;
     }
     
-    // Fill default arguments according to the selection
+    // Fill default arguments according to the selection using the correct root
     wchar_t sherpa_exe[MAX_PATH];
-    swprintf(sherpa_exe, _countof(sherpa_exe), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-static-MT-Release-no-tts\\bin\\sherpa-onnx-offline.exe", app_dir);
+    swprintf(sherpa_exe, _countof(sherpa_exe), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-static-MT-Release-no-tts\\bin\\sherpa-onnx-offline.exe", correct_root);
     
     wcsncpy_s(app->sherpa_exe, _countof(app->sherpa_exe), sherpa_exe, _TRUNCATE);
     
     if (sel == 0) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--tokens=\"%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt\" --paraformer=\"%ls\\third_party\\sherpa\\models\\paraformer-zh\\model.int8.onnx\" --num-threads=2 --decoding-method=greedy_search", app_dir, app_dir);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--tokens=\"%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt\" --paraformer=\"%ls\\third_party\\sherpa\\models\\paraformer-zh\\model.int8.onnx\" --num-threads=2 --decoding-method=greedy_search", correct_root, correct_root);
     } else if (sel == 1) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--tokens=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\tokens.txt\" --encoder=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\encoder.int8.onnx\" --decoder=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\decoder.onnx\" --joiner=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\joiner.int8.onnx\" --num-threads=2 --decoding-method=modified_beam_search", app_dir, app_dir, app_dir, app_dir);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--tokens=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\tokens.txt\" --encoder=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\encoder.int8.onnx\" --decoder=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\decoder.onnx\" --joiner=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\joiner.int8.onnx\" --num-threads=2 --decoding-method=modified_beam_search", correct_root, correct_root, correct_root, correct_root);
     } else if (sel == 2) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--funasr-nano-encoder-adaptor=\"%ls\\third_party\\sherpa\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"%ls\\third_party\\sherpa\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"%ls\\third_party\\sherpa\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"%ls\\third_party\\sherpa\\models\\funasr\\Qwen3-0.6B\" --tokens=\"%ls\\third_party\\sherpa\\models\\funasr\\tokens.txt\" --num-threads=2", app_dir, app_dir, app_dir, app_dir, app_dir);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--funasr-nano-encoder-adaptor=\"%ls\\third_party\\sherpa\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"%ls\\third_party\\sherpa\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"%ls\\third_party\\sherpa\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"%ls\\third_party\\sherpa\\models\\funasr\\Qwen3-0.6B\" --tokens=\"%ls\\third_party\\sherpa\\models\\funasr\\tokens.txt\" --num-threads=2", correct_root, correct_root, correct_root, correct_root, correct_root);
     }
     
     SetWindowTextW(app->sherpa_exe_edit, app->sherpa_exe);
