@@ -1618,7 +1618,7 @@ static void apply_model_selection(AppState *app, int sel) {
             wchar_t append_args[1024];
             wchar_t bpe_path[MAX_PATH];
             swprintf(bpe_path, _countof(bpe_path), L"%ls\\third_party\\sherpa\\models\\zipformer-zh\\bpe.model", correct_root);
-            swprintf(append_args, _countof(append_args), L" --hotwords-file=\"%ls\" --hotwords-score=1.5 --bpe-vocab=\"%ls\" --modeling-unit=cjkchar+bpe", hotwords_path, bpe_path);
+            swprintf(append_args, _countof(append_args), L" --hotwords-file=\"%ls\" --hotwords-score=1.5 --bpe-model=\"%ls\" --modeling-unit=cjkchar+bpe", hotwords_path, bpe_path);
             wcscat_s(app->sherpa_args, _countof(app->sherpa_args), append_args);
         } else if (sel == 2) { // FunASR
             wchar_t append_args[1024];
@@ -1836,21 +1836,6 @@ static void save_settings(AppState *app) {
              app->target_lang,
              app->translate_enabled ? 1u : 0u);
 
-    bytes_needed = WideCharToMultiByte(CP_ACP, 0, content, -1, NULL, 0, NULL, NULL);
-    if (bytes_needed <= 0) {
-        return;
-    }
-
-    mb_content = (char *)malloc((size_t)bytes_needed);
-    if (!mb_content) {
-        return;
-    }
-
-    if (WideCharToMultiByte(CP_ACP, 0, content, -1, mb_content, bytes_needed, NULL, NULL) <= 0) {
-        free(mb_content);
-        return;
-    }
-
     file_handle = CreateFileW(app->config_path,
                               GENERIC_WRITE,
                               FILE_SHARE_READ,
@@ -1859,13 +1844,17 @@ static void save_settings(AppState *app) {
                               FILE_ATTRIBUTE_NORMAL,
                               NULL);
     if (file_handle == INVALID_HANDLE_VALUE) {
-        free(mb_content);
         return;
     }
 
-    WriteFile(file_handle, mb_content, (DWORD)(bytes_needed - 1), &written, NULL);
+    // Write UTF-16 LE BOM
+    unsigned char bom[] = { 0xFF, 0xFE };
+    WriteFile(file_handle, bom, sizeof(bom), &written, NULL);
+
+    // Write wide character content directly
+    DWORD bytes_to_write = (DWORD)(wcslen(content) * sizeof(wchar_t));
+    WriteFile(file_handle, content, bytes_to_write, &written, NULL);
     CloseHandle(file_handle);
-    free(mb_content);
 }
 
 static void load_settings(AppState *app) {
