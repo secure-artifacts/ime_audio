@@ -1590,7 +1590,7 @@ static void apply_model_selection(AppState *app, int sel) {
     wcsncpy_s(app->sherpa_exe, _countof(app->sherpa_exe), sherpa_exe, _TRUNCATE);
     
     if (sel == 0) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--tokens=%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt --paraformer=%ls\\third_party\\sherpa\\models\\paraformer-zh\\model.int8.onnx --num-threads=2 --decoding-method=greedy_search", correct_root, correct_root);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--paraformer=%ls\\third_party\\sherpa\\models\\paraformer-zh\\model.int8.onnx --tokens=%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt --num-threads=2 --decoding-method=greedy_search", correct_root, correct_root);
     } else if (sel == 1) {
         swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--tokens=%ls\\third_party\\sherpa\\models\\zipformer-zh\\tokens.txt --encoder=%ls\\third_party\\sherpa\\models\\zipformer-zh\\encoder.int8.onnx --decoder=%ls\\third_party\\sherpa\\models\\zipformer-zh\\decoder.onnx --joiner=%ls\\third_party\\sherpa\\models\\zipformer-zh\\joiner.int8.onnx --num-threads=2 --decoding-method=modified_beam_search", correct_root, correct_root, correct_root, correct_root);
     } else if (sel == 2) {
