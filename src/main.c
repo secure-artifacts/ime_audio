@@ -1037,24 +1037,10 @@ static void update_hotkey_preview(AppState *app) {
 }
 
 static void update_float_button(AppState *app) {
-    const wchar_t *caption = L"录音";
-    BOOL enabled = TRUE;
-
-    if (!app || !app->float_button) {
+    if (!app || !app->float_hwnd) {
         return;
     }
-
-    if (app->state == VOICE_RECORDING) {
-        caption = L"暂停";
-    } else if (app->state == VOICE_PAUSED) {
-        caption = L"继续";
-    } else if (app->state == VOICE_TRANSCRIBING) {
-        caption = L"...";
-        enabled = FALSE;
-    }
-
-    SetWindowTextW(app->float_button, caption);
-    EnableWindow(app->float_button, enabled);
+    InvalidateRect(app->float_hwnd, NULL, TRUE);
 }
 
 static DWORD clamp_setting(DWORD value, DWORD min_value, DWORD max_value) {
@@ -2123,28 +2109,18 @@ static void update_floating_position(AppState *app) {
     BOOL has_caret = FALSE;
     int x = 0;
     int y = 0;
-    const int width = 200;
-    const int height = 44;
+    const int width = 12;
+    const int height = 12;
 
     if (!app || !app->float_hwnd) {
         return;
     }
 
-    // 优化：空闲状态下不显示悬浮窗
-    if (app->state == VOICE_IDLE) {
+    foreground = GetForegroundWindow();
+    if (!foreground || is_our_window(app, foreground)) {
         if (IsWindowVisible(app->float_hwnd)) {
             ShowWindow(app->float_hwnd, SW_HIDE);
         }
-        return;
-    }
-
-    foreground = GetForegroundWindow();
-    if (!foreground || is_our_window(app, foreground)) {
-        // 如果当前焦点是我们自己的窗口，且不是录音/暂停/识别状态，则隐藏
-        if (app->state == VOICE_IDLE) {
-            ShowWindow(app->float_hwnd, SW_HIDE);
-        }
-        // 当我们自己的窗口处于激活状态时，不更新位置，避免悬浮窗自己以自己为锚点产生漂移
         return;
     }
 
@@ -2154,27 +2130,21 @@ static void update_floating_position(AppState *app) {
 
     if (thread_id != 0 && GetGUIThreadInfo(thread_id, &thread_info)) {
         if (thread_info.hwndFocus) {
-            // 尝试获取光标位置
             if (thread_info.rcCaret.left != 0 || thread_info.rcCaret.top != 0) {
                 caret_pos.x = thread_info.rcCaret.left;
                 caret_pos.y = thread_info.rcCaret.bottom;
                 ClientToScreen(thread_info.hwndFocus, &caret_pos);
-                x = caret_pos.x;
-                y = caret_pos.y + 5; // 光标下方一点
+                x = caret_pos.x + 5;
+                y = caret_pos.y + 5;
                 has_caret = TRUE;
             }
         }
     }
 
     if (!has_caret) {
-        // 如果拿不到光标位置（比如在浏览器或某些特定编辑器中），回退到跟随窗口
-        RECT anchor;
-        if (GetWindowRect(foreground, &anchor)) {
-            x = anchor.left + 10;
-            y = anchor.bottom - height - 10;
-        } else {
-            return;
-        }
+        GetCursorPos(&caret_pos);
+        x = caret_pos.x + 15;
+        y = caret_pos.y + 15;
     }
 
     if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work_area, 0)) {
@@ -2184,7 +2154,6 @@ static void update_floating_position(AppState *app) {
         work_area.bottom = GetSystemMetrics(SM_CYSCREEN);
     }
 
-    // 边界检查，防止悬浮窗跑出屏幕
     if (x + width > work_area.right) x = work_area.right - width;
     if (x < work_area.left) x = work_area.left;
     if (y + height > work_area.bottom) y = work_area.bottom - height;
@@ -3189,22 +3158,6 @@ static void create_main_controls(AppState *app) {
                                     (HMENU)(INT_PTR)IDC_LIST_LOG, app->instance, NULL);
     apply_font(app->log_list, font);
 }
-static void create_float_controls(AppState *app) {
-    HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-
-    app->float_button = CreateWindowW(L"BUTTON", L"录音",
-                                      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                      8, 9, 68, 24, app->float_hwnd,
-                                      (HMENU)(INT_PTR)IDC_FLOAT_TOGGLE, app->instance, NULL);
-    apply_font(app->float_button, font);
-
-    app->float_status = CreateWindowW(L"STATIC", L"就绪",
-                                      WS_CHILD | WS_VISIBLE,
-                                      84, 13, 110, 18, app->float_hwnd,
-                                      (HMENU)(INT_PTR)IDC_FLOAT_STATUS, app->instance, NULL);
-    apply_font(app->float_status, font);
-}
-
 static LRESULT CALLBACK FloatWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     AppState *app = (AppState *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
 
@@ -3220,16 +3173,44 @@ static LRESULT CALLBACK FloatWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             return -1;
         }
         app->float_hwnd = hwnd;
-        create_float_controls(app);
+        SetLayeredWindowAttributes(hwnd, RGB(255, 0, 255), 200, LWA_COLORKEY | LWA_ALPHA);
         return 0;
-    case WM_COMMAND:
-        if (LOWORD(wParam) == IDC_FLOAT_TOGGLE && HIWORD(wParam) == BN_CLICKED) {
-            if (app && app->main_hwnd) {
-                PostMessageW(app->main_hwnd, WMAPP_FLOAT_TOGGLE, 0, 0);
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        
+        HBRUSH bgBrush = CreateSolidBrush(RGB(255, 0, 255));
+        FillRect(hdc, &rc, bgBrush);
+        DeleteObject(bgBrush);
+
+        COLORREF color = RGB(0, 120, 255); // Blue
+        if (app) {
+            if (app->state == VOICE_RECORDING || app->state == VOICE_TRANSCRIBING) {
+                color = RGB(0, 220, 0); // Green
+            } else if (app->state == VOICE_PAUSED) {
+                color = RGB(255, 200, 0); // Yellow
             }
-            return 0;
         }
-        break;
+
+        HBRUSH brush = CreateSolidBrush(color);
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(255, 255, 255));
+        HGDIOBJ oldBrush = SelectObject(hdc, brush);
+        HGDIOBJ oldPen = SelectObject(hdc, pen);
+
+        Ellipse(hdc, rc.left, rc.top, rc.right, rc.bottom);
+
+        SelectObject(hdc, oldBrush);
+        SelectObject(hdc, oldPen);
+        DeleteObject(brush);
+        DeleteObject(pen);
+
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_NCHITTEST:
+        return HTTRANSPARENT;
     case WM_CLOSE:
         ShowWindow(hwnd, SW_HIDE);
         return 0;
@@ -3465,9 +3446,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
         return 1;
     }
 
-    app.float_hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, FLOAT_CLASS_NAME, L"语音输入悬浮窗",
-                                     WS_POPUP | WS_BORDER,
-                                     CW_USEDEFAULT, CW_USEDEFAULT, 200, 44,
+    app.float_hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT, FLOAT_CLASS_NAME, L"语音输入悬浮窗",
+                                     WS_POPUP,
+                                     CW_USEDEFAULT, CW_USEDEFAULT, 12, 12,
                                      NULL, NULL, hInstance, &app);
     if (!app.float_hwnd) {
         DestroyWindow(app.main_hwnd);
