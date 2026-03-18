@@ -1606,6 +1606,57 @@ static void apply_model_selection(AppState *app, int sel) {
         swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--funasr-nano-encoder-adaptor=\"%ls\\third_party\\sherpa\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"%ls\\third_party\\sherpa\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"%ls\\third_party\\sherpa\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"%ls\\third_party\\sherpa\\models\\funasr\\Qwen3-0.6B\" --tokens=\"%ls\\third_party\\sherpa\\models\\funasr\\tokens.txt\" --num-threads=2", correct_root, correct_root, correct_root, correct_root, correct_root);
     }
     
+
+    // Automatically setup hotwords
+    {
+        wchar_t hotwords_path[MAX_PATH];
+        wchar_t config_dir[MAX_PATH];
+        extract_parent_dir(app->config_path, config_dir, _countof(config_dir));
+        swprintf(hotwords_path, _countof(hotwords_path), L"%ls\\hotwords.txt", config_dir);
+
+        if (!file_exists_non_dir(hotwords_path)) {
+            FILE *f = _wfopen(hotwords_path, L"wt,ccs=UTF-8");
+            if (f) {
+                fputs("你好 1.5\n", f);
+                fputs("语音输入 2.0\n", f);
+                fclose(f);
+            }
+        }
+
+        if (sel == 1) { // Zipformer
+            wchar_t append_args[1024];
+            wchar_t bpe_path[MAX_PATH];
+            swprintf(bpe_path, _countof(bpe_path), L"%ls\\third_party\\sherpa\\models\\zipformer-zh\\bpe.model", correct_root);
+            swprintf(append_args, _countof(append_args), L" --hotwords-file=\"%ls\" --hotwords-score=1.5 --bpe-vocab=\"%ls\" --modeling-unit=cjkchar+bpe", hotwords_path, bpe_path);
+            wcscat_s(app->sherpa_args, _countof(app->sherpa_args), append_args);
+        } else if (sel == 2) { // FunASR
+            wchar_t append_args[1024];
+            FILE *f = _wfopen(hotwords_path, L"rt,ccs=UTF-8");
+            if (f) {
+                wchar_t line[256];
+                wchar_t all_words[1024] = L"";
+                int first = 1;
+                while (fgetws(line, _countof(line), f)) {
+                    size_t len = wcslen(line);
+                    while(len > 0 && (line[len-1] == L'\n' || line[len-1] == L'\r' || line[len-1] == L' ')) {
+                        line[len-1] = L'\0';
+                        len--;
+                    }
+                    if (len > 0 && wcschr(line, L'.') == NULL) {
+                        if (!first) wcscat_s(all_words, _countof(all_words), L",");
+                        wcscat_s(all_words, _countof(all_words), line);
+                        first = 0;
+                    }
+                }
+                fclose(f);
+                if (all_words[0] != L'\0') {
+                    swprintf(append_args, _countof(append_args), L" --funasr-nano-hotwords=\"%ls\"", all_words);
+                    wcscat_s(app->sherpa_args, _countof(app->sherpa_args), append_args);
+                }
+            }
+        }
+    }
+
     SetWindowTextW(app->sherpa_exe_edit, app->sherpa_exe);
     SetWindowTextW(app->sherpa_args_edit, app->sherpa_args);
     save_settings(app);
