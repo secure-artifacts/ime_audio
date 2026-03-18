@@ -10,6 +10,7 @@ echo.
 set "TAG=v1.12.29"
 set "ROOT_DIR=%~dp0.."
 set "SHERPA_ROOT=%ROOT_DIR%\third_party\sherpa"
+if not exist "%SHERPA_ROOT%" mkdir "%SHERPA_ROOT%"
 set "HAS_GPU=0"
 nvidia-smi >nul 2>&1
 if !ERRORLEVEL! equ 0 set "HAS_GPU=1"
