@@ -72,9 +72,11 @@ if "%MODEL_ID%"=="paraformer" (
 if "%MODEL_ID%"=="zipformer" (
     set "MODEL_DIR=%SHERPA_ROOT%\models\zipformer-zh"
     if not exist "!MODEL_DIR!" mkdir "!MODEL_DIR!"
-    echo Downloading Zipformer-ctc-zh model...
-    if not exist "!MODEL_DIR!\model.int8.onnx" curl -L -o "!MODEL_DIR!\model.int8.onnx" "%HF_MIRROR%/csukuangfj/sherpa-onnx-zipformer-ctc-zh-int8-2025-07-03/resolve/main/model.int8.onnx"
-    if not exist "!MODEL_DIR!\tokens.txt" curl -L -o "!MODEL_DIR!\tokens.txt" "%HF_MIRROR%/csukuangfj/sherpa-onnx-zipformer-ctc-zh-int8-2025-07-03/resolve/main/tokens.txt"
+    echo Downloading Zipformer-multi-zh-hans model...
+    if not exist "!MODEL_DIR!\encoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx" curl -L -o "!MODEL_DIR!\encoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx" "%HF_MIRROR%/zrjin/sherpa-onnx-zipformer-multi-zh-hans-2023-9-2/resolve/main/encoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx"
+    if not exist "!MODEL_DIR!\decoder-epoch-20-avg-1-chunk-16-left-128.onnx" curl -L -o "!MODEL_DIR!\decoder-epoch-20-avg-1-chunk-16-left-128.onnx" "%HF_MIRROR%/zrjin/sherpa-onnx-zipformer-multi-zh-hans-2023-9-2/resolve/main/decoder-epoch-20-avg-1-chunk-16-left-128.onnx"
+    if not exist "!MODEL_DIR!\joiner-epoch-20-avg-1-chunk-16-left-128.int8.onnx" curl -L -o "!MODEL_DIR!\joiner-epoch-20-avg-1-chunk-16-left-128.int8.onnx" "%HF_MIRROR%/zrjin/sherpa-onnx-zipformer-multi-zh-hans-2023-9-2/resolve/main/joiner-epoch-20-avg-1-chunk-16-left-128.int8.onnx"
+    if not exist "!MODEL_DIR!\tokens.txt" curl -L -o "!MODEL_DIR!\tokens.txt" "%HF_MIRROR%/zrjin/sherpa-onnx-zipformer-multi-zh-hans-2023-9-2/resolve/main/tokens.txt"
 )
 
 if "%MODEL_ID%"=="funasr" (

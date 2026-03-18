@@ -1605,7 +1605,7 @@ static void apply_model_selection(AppState *app, int sel) {
     if (sel == 0) {
         swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--paraformer=%ls\\third_party\\sherpa\\models\\paraformer-zh\\model.int8.onnx --tokens=%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt --num-threads=2 --decoding-method=greedy_search", cuda_prefix, correct_root, correct_root);
     } else if (sel == 1) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--zipformer-ctc-model=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\model.int8.onnx\" --tokens=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\tokens.txt\" --num-threads=2 --decoding-method=greedy_search", cuda_prefix, correct_root, correct_root);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--encoder=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\encoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx\" --decoder=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\decoder-epoch-20-avg-1-chunk-16-left-128.onnx\" --joiner=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\joiner-epoch-20-avg-1-chunk-16-left-128.int8.onnx\" --tokens=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\tokens.txt\" --num-threads=2 --decoding-method=greedy_search", cuda_prefix, correct_root, correct_root, correct_root, correct_root);
     } else if (sel == 2) {
         swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--funasr-nano-encoder-adaptor=\"%ls\\third_party\\sherpa\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"%ls\\third_party\\sherpa\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"%ls\\third_party\\sherpa\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"%ls\\third_party\\sherpa\\models\\funasr\\Qwen3-0.6B\" --tokens=\"%ls\\third_party\\sherpa\\models\\funasr\\tokens.txt\"", cuda_prefix, correct_root, correct_root, correct_root, correct_root, correct_root);
     }
@@ -1630,7 +1630,6 @@ static void apply_model_selection(AppState *app, int sel) {
         if (sel == 1) { // Zipformer
             wchar_t append_args[1024];
             wchar_t bpe_path[MAX_PATH];
-            swprintf(bpe_path, _countof(bpe_path), L"%ls\\third_party\\sherpa\\models\\zipformer-zh\\bpe.model", correct_root);
             swprintf(append_args, _countof(append_args), L" --hotwords-file=\\\x22%ls\\\x22 --hotwords-score=1.5", hotwords_path);
             wcscat_s(app->sherpa_args, _countof(app->sherpa_args), append_args);
         } else if (sel == 2) { // FunASR
@@ -2979,7 +2978,7 @@ static void create_main_controls(AppState *app) {
                                         (HMENU)(INT_PTR)IDC_COMBO_MODEL, app->instance, NULL);
     apply_font(app->model_combo, font);
     SendMessageW(app->model_combo, CB_ADDSTRING, 0, (LPARAM)L"默认模型 (Paraformer)");
-    SendMessageW(app->model_combo, CB_ADDSTRING, 0, (LPARAM)L"Zipformer-ctc-zh (2025)");
+    SendMessageW(app->model_combo, CB_ADDSTRING, 0, (LPARAM)L"Zipformer-multi-zh-hans (Transducer)");
     SendMessageW(app->model_combo, CB_ADDSTRING, 0, (LPARAM)L"FunASR-nano (2025)");
     SendMessageW(app->model_combo, CB_SETCURSEL, 0, 0);
 
