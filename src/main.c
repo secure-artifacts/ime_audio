@@ -1584,14 +1584,6 @@ static void apply_model_selection(AppState *app, int sel) {
     if (sel == 1) model_id = L"zipformer";
     if (sel == 2) model_id = L"funasr";
 
-    swprintf(params, _countof(params), L"/c \"%ls\" %ls", script_path, model_id);
-    shell_result = ShellExecuteW(app->main_hwnd, L"open", L"cmd.exe", params, NULL, SW_SHOWNORMAL);
-    
-    if ((INT_PTR)shell_result <= 32) {
-        set_status(app, L"启动下载脚本失败，请检查 scripts 目录是否存在。");
-        return;
-    }
-    
     // Fill default arguments according to the selection using the correct root
     wchar_t sherpa_exe[2048];
     swprintf(sherpa_exe, _countof(sherpa_exe), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-static-MT-Release-no-tts\\bin\\sherpa-onnx-offline.exe", correct_root);
@@ -1660,7 +1652,15 @@ static void apply_model_selection(AppState *app, int sel) {
     SetWindowTextW(app->sherpa_exe_edit, app->sherpa_exe);
     SetWindowTextW(app->sherpa_args_edit, app->sherpa_args);
     save_settings(app);
-    set_status(app, L"正在下载模型，并已更新配置。");
+
+    swprintf(params, _countof(params), L"/c \"%ls\" %ls", script_path, model_id);
+    shell_result = ShellExecuteW(app->main_hwnd, L"open", L"cmd.exe", params, NULL, SW_SHOWNORMAL);
+    
+    if ((INT_PTR)shell_result <= 32) {
+        set_status(app, L"已更新配置，但启动下载脚本失败。");
+    } else {
+        set_status(app, L"正在下载模型，并已更新配置。");
+    }
 }
 
 static BOOL launch_sherpa_installer(AppState *app) {
