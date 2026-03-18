@@ -17,6 +17,37 @@ if "%MODEL_ID%"=="" (
 set "ROOT_DIR=%~dp0.."
 set "SHERPA_ROOT=%ROOT_DIR%\third_party\sherpa"
 
+set "TAG=v1.12.29"
+set "RUNTIME_NAME=sherpa-onnx-%TAG%-win-x64-static-MT-Release-no-tts"
+set "ARCHIVE_NAME=%RUNTIME_NAME%.tar.bz2"
+set "ARCHIVE_PATH=%SHERPA_ROOT%\%ARCHIVE_NAME%"
+set "RUNTIME_DIR=%SHERPA_ROOT%\%RUNTIME_NAME%"
+if not exist "%RUNTIME_DIR%" (
+    echo ===================================================
+    echo   Downloading Sherpa-ONNX Runtime...
+    echo ===================================================
+    if not exist "%ARCHIVE_PATH%" (
+        set "URL=https://mirror.ghproxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/%TAG%/%ARCHIVE_NAME%"
+        echo Downloading !URL!
+        curl -L -o "%ARCHIVE_PATH%" "!URL!"
+        if !ERRORLEVEL! neq 0 (
+            echo [error] Failed to download runtime.
+            pause
+            exit /b 1
+        )
+    )
+    echo Extracting %ARCHIVE_NAME% ...
+    tar -xjf "%ARCHIVE_PATH%" -C "%SHERPA_ROOT%"
+    if !ERRORLEVEL! neq 0 (
+        echo [error] Failed to extract runtime.
+        pause
+        exit /b 1
+    )
+    echo Runtime extracted successfully.
+    echo.
+)
+
+
 :: Mirror URL to avoid huggingface blockage in China
 set "HF_MIRROR=https://hf-mirror.com"
 

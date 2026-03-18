@@ -22,7 +22,7 @@ if not exist "%MODEL_DIR%" mkdir "%MODEL_DIR%"
 :: 1. Download and extract runtime
 if not exist "%RUNTIME_DIR%" (
     if not exist "%ARCHIVE_PATH%" (
-        set "URL=https://github.com/k2-fsa/sherpa-onnx/releases/download/%TAG%/%ARCHIVE_NAME%"
+        set "URL=https://mirror.ghproxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/%TAG%/%ARCHIVE_NAME%"
         echo [download] !URL!
         curl -L -o "%ARCHIVE_PATH%" "!URL!"
         if %ERRORLEVEL% neq 0 (
@@ -48,16 +48,16 @@ if not exist "%RUNTIME_DIR%" (
 :: 2. Download models
 set "MODEL_ONNX=%MODEL_DIR%\model.int8.onnx"
 if not exist "%MODEL_ONNX%" (
-    echo [download] https://huggingface.co/csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14/resolve/main/model.int8.onnx
-    curl -L -o "%MODEL_ONNX%" "https://huggingface.co/csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14/resolve/main/model.int8.onnx"
+    echo [download] https://hf-mirror.com/csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14/resolve/main/model.int8.onnx
+    curl -L -o "%MODEL_ONNX%" "https://hf-mirror.com/csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14/resolve/main/model.int8.onnx"
 ) else (
     echo [skip] model file exists: %MODEL_ONNX%
 )
 
 set "MODEL_TOKENS=%MODEL_DIR%\tokens.txt"
 if not exist "%MODEL_TOKENS%" (
-    echo [download] https://huggingface.co/csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14/resolve/main/tokens.txt
-    curl -L -o "%MODEL_TOKENS%" "https://huggingface.co/csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14/resolve/main/tokens.txt"
+    echo [download] https://hf-mirror.com/csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14/resolve/main/tokens.txt
+    curl -L -o "%MODEL_TOKENS%" "https://hf-mirror.com/csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14/resolve/main/tokens.txt"
 ) else (
     echo [skip] tokens file exists: %MODEL_TOKENS%
 )
