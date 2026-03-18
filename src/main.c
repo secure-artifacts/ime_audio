@@ -1608,8 +1608,8 @@ static void apply_model_selection(AppState *app, int sel) {
         if (!file_exists_non_dir(hotwords_path)) {
             FILE *f = _wfopen(hotwords_path, L"wt,ccs=UTF-8");
             if (f) {
-                fputs("你好 1.5\n", f);
-                fputs("语音输入 2.0\n", f);
+                fputws(L"你好 1.5\n", f);
+                fputws(L"语音输入 2.0\n", f);
                 fclose(f);
             }
         }
