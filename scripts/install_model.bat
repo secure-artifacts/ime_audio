@@ -72,12 +72,9 @@ if "%MODEL_ID%"=="paraformer" (
 if "%MODEL_ID%"=="zipformer" (
     set "MODEL_DIR=%SHERPA_ROOT%\models\zipformer-zh"
     if not exist "!MODEL_DIR!" mkdir "!MODEL_DIR!"
-    echo Downloading Zipformer-zh-xlarge model...
-    if not exist "!MODEL_DIR!\bpe.model" curl -L -o "!MODEL_DIR!\bpe.model" "%HF_MIRROR%/csukuangfj/sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30/resolve/main/bpe.model"
-    if not exist "!MODEL_DIR!\decoder.onnx" curl -L -o "!MODEL_DIR!\decoder.onnx" "%HF_MIRROR%/csukuangfj/sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30/resolve/main/decoder.onnx"
-    if not exist "!MODEL_DIR!\encoder.int8.onnx" curl -L -o "!MODEL_DIR!\encoder.int8.onnx" "%HF_MIRROR%/csukuangfj/sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30/resolve/main/encoder.int8.onnx"
-    if not exist "!MODEL_DIR!\joiner.int8.onnx" curl -L -o "!MODEL_DIR!\joiner.int8.onnx" "%HF_MIRROR%/csukuangfj/sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30/resolve/main/joiner.int8.onnx"
-    if not exist "!MODEL_DIR!\tokens.txt" curl -L -o "!MODEL_DIR!\tokens.txt" "%HF_MIRROR%/csukuangfj/sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30/resolve/main/tokens.txt"
+    echo Downloading Zipformer-ctc-zh model...
+    if not exist "!MODEL_DIR!\model.int8.onnx" curl -L -o "!MODEL_DIR!\model.int8.onnx" "%HF_MIRROR%/csukuangfj/sherpa-onnx-zipformer-ctc-zh-int8-2025-07-03/resolve/main/model.int8.onnx"
+    if not exist "!MODEL_DIR!\tokens.txt" curl -L -o "!MODEL_DIR!\tokens.txt" "%HF_MIRROR%/csukuangfj/sherpa-onnx-zipformer-ctc-zh-int8-2025-07-03/resolve/main/tokens.txt"
 )
 
 if "%MODEL_ID%"=="funasr" (
