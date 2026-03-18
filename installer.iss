@@ -1,6 +1,6 @@
 [Setup]
 AppName=Voice IME (语音输入助手)
-AppVersion=1.0.19
+AppVersion=1.0.20
 DefaultDirName={autopf}\Voice IME
 DefaultGroupName=Voice IME
 OutputDir=build\Installer

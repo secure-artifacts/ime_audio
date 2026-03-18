@@ -18,7 +18,16 @@ set "ROOT_DIR=%~dp0.."
 set "SHERPA_ROOT=%ROOT_DIR%\third_party\sherpa"
 
 set "TAG=v1.12.29"
-set "RUNTIME_NAME=sherpa-onnx-%TAG%-win-x64-static-MT-Release-no-tts"
+set "HAS_GPU=0"
+nvidia-smi >nul 2>&1
+if !ERRORLEVEL! equ 0 set "HAS_GPU=1"
+if !HAS_GPU! equ 1 (
+    echo NVIDIA GPU detected. Using CUDA runtime.
+    set "RUNTIME_NAME=sherpa-onnx-%TAG%-win-x64-cuda"
+) else (
+    echo No NVIDIA GPU detected. Using CPU runtime.
+    set "RUNTIME_NAME=sherpa-onnx-%TAG%-win-x64-static-MT-Release-no-tts"
+)
 set "ARCHIVE_NAME=%RUNTIME_NAME%.tar.bz2"
 set "ARCHIVE_PATH=%SHERPA_ROOT%\%ARCHIVE_NAME%"
 set "RUNTIME_DIR=%SHERPA_ROOT%\%RUNTIME_NAME%"

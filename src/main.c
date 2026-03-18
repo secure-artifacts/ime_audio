@@ -1137,36 +1137,38 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
 
     for (i = 0; i < 3; ++i) {
         wchar_t exe_path[MAX_PATH];
+        wchar_t exe_path_cuda[MAX_PATH];
         wchar_t tokens_path[MAX_PATH];
         wchar_t model_path[MAX_PATH];
+        BOOL is_cuda = FALSE;
 
         if (!roots[i] || roots[i][0] == L'\0') {
             continue;
         }
 
-        swprintf(exe_path,
-                 _countof(exe_path),
-                 L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-static-MT-Release-no-tts\\bin\\sherpa-onnx-offline.exe",
-                 roots[i]);
-        swprintf(tokens_path,
-                 _countof(tokens_path),
-                 L"%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt",
-                 roots[i]);
-        swprintf(model_path,
-                 _countof(model_path),
-                 L"%ls\\third_party\\sherpa\\models\\paraformer-zh\\model.int8.onnx",
-                 roots[i]);
+        swprintf(exe_path_cuda, _countof(exe_path_cuda), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-cuda\\bin\\sherpa-onnx-offline.exe", roots[i]);
+        swprintf(exe_path, _countof(exe_path), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-static-MT-Release-no-tts\\bin\\sherpa-onnx-offline.exe", roots[i]);
+        
+        swprintf(tokens_path, _countof(tokens_path), L"%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt", roots[i]);
+        swprintf(model_path, _countof(model_path), L"%ls\\third_party\\sherpa\\models\\paraformer-zh\\model.int8.onnx", roots[i]);
 
-        if (!file_exists_non_dir(exe_path) || !file_exists_non_dir(tokens_path) || !file_exists_non_dir(model_path)) {
+        if (file_exists_non_dir(exe_path_cuda)) {
+            wcsncpy_s(exe_path, _countof(exe_path), exe_path_cuda, _TRUNCATE);
+            is_cuda = TRUE;
+        } else if (!file_exists_non_dir(exe_path)) {
+            continue;
+        }
+
+        if (!file_exists_non_dir(tokens_path) || !file_exists_non_dir(model_path)) {
             continue;
         }
 
         wcsncpy_s(app->sherpa_exe, _countof(app->sherpa_exe), exe_path, _TRUNCATE);
-        swprintf(app->sherpa_args,
-                 _countof(app->sherpa_args),
-                 L"--paraformer=%ls --tokens=%ls --num-threads=2 --decoding-method=greedy_search",
-                 model_path,
-                 tokens_path);
+        if (is_cuda) {
+            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--provider=cuda --paraformer=%ls --tokens=%ls --num-threads=2 --decoding-method=greedy_search", model_path, tokens_path);
+        } else {
+            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--paraformer=%ls --tokens=%ls --num-threads=2 --decoding-method=greedy_search", model_path, tokens_path);
+        }
 
         app_log_line(app, "auto-filled sherpa defaults from local third_party folder");
         return;
@@ -1572,16 +1574,27 @@ static void apply_model_selection(AppState *app, int sel) {
 
     // Fill default arguments according to the selection using the correct root
     wchar_t sherpa_exe[2048];
-    swprintf(sherpa_exe, _countof(sherpa_exe), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-static-MT-Release-no-tts\\bin\\sherpa-onnx-offline.exe", correct_root);
+    BOOL is_cuda = FALSE;
+    swprintf(sherpa_exe, _countof(sherpa_exe), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-cuda\\bin\\sherpa-onnx-offline.exe", correct_root);
+    if (file_exists_non_dir(sherpa_exe)) {
+        is_cuda = TRUE;
+    } else {
+        swprintf(sherpa_exe, _countof(sherpa_exe), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-static-MT-Release-no-tts\\bin\\sherpa-onnx-offline.exe", correct_root);
+    }
     
     wcsncpy_s(app->sherpa_exe, _countof(app->sherpa_exe), sherpa_exe, _TRUNCATE);
     
+    wchar_t cuda_prefix[32] = L"";
+    if (is_cuda) {
+        wcscpy_s(cuda_prefix, _countof(cuda_prefix), L"--provider=cuda ");
+    }
+    
     if (sel == 0) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--paraformer=%ls\\third_party\\sherpa\\models\\paraformer-zh\\model.int8.onnx --tokens=%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt --num-threads=2 --decoding-method=greedy_search", correct_root, correct_root);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--paraformer=%ls\\third_party\\sherpa\\models\\paraformer-zh\\model.int8.onnx --tokens=%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt --num-threads=2 --decoding-method=greedy_search", cuda_prefix, correct_root, correct_root);
     } else if (sel == 1) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--encoder=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\encoder.int8.onnx\" --decoder=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\decoder.onnx\" --joiner=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\joiner.int8.onnx\" --tokens=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\tokens.txt\" --num-threads=2 --decoding-method=greedy_search", correct_root, correct_root, correct_root, correct_root);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--encoder=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\encoder.int8.onnx\" --decoder=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\decoder.onnx\" --joiner=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\joiner.int8.onnx\" --tokens=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\tokens.txt\" --num-threads=2 --decoding-method=greedy_search", cuda_prefix, correct_root, correct_root, correct_root, correct_root);
     } else if (sel == 2) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--funasr-nano-encoder-adaptor=\"%ls\\third_party\\sherpa\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"%ls\\third_party\\sherpa\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"%ls\\third_party\\sherpa\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"%ls\\third_party\\sherpa\\models\\funasr\\Qwen3-0.6B\" --tokens=\"%ls\\third_party\\sherpa\\models\\funasr\\tokens.txt\"", correct_root, correct_root, correct_root, correct_root, correct_root);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--funasr-nano-encoder-adaptor=\"%ls\\third_party\\sherpa\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"%ls\\third_party\\sherpa\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"%ls\\third_party\\sherpa\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"%ls\\third_party\\sherpa\\models\\funasr\\Qwen3-0.6B\" --tokens=\"%ls\\third_party\\sherpa\\models\\funasr\\tokens.txt\"", cuda_prefix, correct_root, correct_root, correct_root, correct_root, correct_root);
     }
     
 
