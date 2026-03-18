@@ -27,7 +27,7 @@ if not exist "%RUNTIME_DIR%" (
     echo   Downloading Sherpa-ONNX Runtime...
     echo ===================================================
     if not exist "%ARCHIVE_PATH%" (
-        set "URL=https://mirror.ghproxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/%TAG%/%ARCHIVE_NAME%"
+        set "URL=https://github.com/k2-fsa/sherpa-onnx/releases/download/%TAG%/%ARCHIVE_NAME%"
         echo Downloading !URL!
         curl -L -o "%ARCHIVE_PATH%" "!URL!"
         if !ERRORLEVEL! neq 0 (
@@ -49,7 +49,7 @@ if not exist "%RUNTIME_DIR%" (
 
 
 :: Mirror URL to avoid huggingface blockage in China
-set "HF_MIRROR=https://hf-mirror.com"
+set "HF_MIRROR=https://huggingface.co"
 
 if "%MODEL_ID%"=="paraformer" (
     set "MODEL_DIR=%SHERPA_ROOT%\models\paraformer-zh"

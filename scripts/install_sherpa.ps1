@@ -129,7 +129,7 @@ $runtimeDir = Join-Path $sherpaRoot $runtimeName
 
 if (-not (Test-Path $runtimeDir)) {
     if (-not (Test-Path $archivePath)) {
-        $runtimeUrl = "https://mirror.ghproxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/$Tag/$archiveName"
+        $runtimeUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/$Tag/$archiveName"
         Write-Host "[download] $runtimeUrl"
         Invoke-WebRequest $runtimeUrl -OutFile $archivePath
     } else {
@@ -147,11 +147,11 @@ New-Item -ItemType Directory -Path $modelDir -Force | Out-Null
 
 $downloads = @(
     @{
-        Url = "https://hf-mirror.com/csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14/resolve/main/model.int8.onnx"
+        Url = "https://huggingface.co/csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14/resolve/main/model.int8.onnx"
         Out = (Join-Path $modelDir "model.int8.onnx")
     },
     @{
-        Url = "https://hf-mirror.com/csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14/resolve/main/tokens.txt"
+        Url = "https://huggingface.co/csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14/resolve/main/tokens.txt"
         Out = (Join-Path $modelDir "tokens.txt")
     }
 )
