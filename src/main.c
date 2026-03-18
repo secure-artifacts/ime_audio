@@ -116,8 +116,8 @@ typedef struct AppState {
     wchar_t config_path[MAX_PATH];
     wchar_t wav_path[MAX_PATH];
     wchar_t log_path[MAX_PATH];
-    wchar_t sherpa_exe[MAX_PATH];
-    wchar_t sherpa_args[1024];
+    wchar_t sherpa_exe[2048];
+    wchar_t sherpa_args[4096];
     wchar_t replace_rules[2048];
     wchar_t gemini_key[256];
     wchar_t project_id[256];
@@ -152,8 +152,8 @@ typedef struct AppState {
 typedef struct TranscribeTask {
     HWND notify_hwnd;
     wchar_t wav_path[MAX_PATH];
-    wchar_t sherpa_exe[MAX_PATH];
-    wchar_t sherpa_args[1024];
+    wchar_t sherpa_exe[2048];
+    wchar_t sherpa_args[4096];
     AsrBackendKind backend;
     char *api_key;
     char *project_id;
@@ -1593,7 +1593,7 @@ static void apply_model_selection(AppState *app, int sel) {
     }
     
     // Fill default arguments according to the selection using the correct root
-    wchar_t sherpa_exe[MAX_PATH];
+    wchar_t sherpa_exe[2048];
     swprintf(sherpa_exe, _countof(sherpa_exe), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-static-MT-Release-no-tts\\bin\\sherpa-onnx-offline.exe", correct_root);
     
     wcsncpy_s(app->sherpa_exe, _countof(app->sherpa_exe), sherpa_exe, _TRUNCATE);
@@ -1760,7 +1760,7 @@ static void save_settings(AppState *app) {
     wchar_t api_key[512];
     wchar_t key_text[32];
     wchar_t replace_rules[2048];
-    wchar_t content[8192];
+    wchar_t content[16384];
     UINT mods = 0;
     int bytes_needed = 0;
     char *mb_content = NULL;
