@@ -709,7 +709,7 @@ static void apply_user_replace_rules(AppState *app, char **text_ptr) {
         return;
     }
 
-    rule = wcstok_s(rules_copy, L";；\r\n", &context);
+    rule = wcstok_s(rules_copy, L";\uFF1B\r\n", &context);
     while (rule) {
         wchar_t *separator = NULL;
         wchar_t *from = NULL;
@@ -718,7 +718,7 @@ static void apply_user_replace_rules(AppState *app, char **text_ptr) {
 
         trim_wide_whitespace(rule);
         if (rule[0] == L'\0') {
-            rule = wcstok_s(NULL, L";；\r\n", &context);
+            rule = wcstok_s(NULL, L";\uFF1B\r\n", &context);
             continue;
         }
 
@@ -738,7 +738,7 @@ static void apply_user_replace_rules(AppState *app, char **text_ptr) {
         }
 
         if (!separator) {
-            rule = wcstok_s(NULL, L";；\r\n", &context);
+            rule = wcstok_s(NULL, L";\uFF1B\r\n", &context);
             continue;
         }
 
@@ -749,12 +749,12 @@ static void apply_user_replace_rules(AppState *app, char **text_ptr) {
         trim_wide_whitespace(to);
 
         if (from[0] == L'\0' || wcscmp(from, to) == 0) {
-            rule = wcstok_s(NULL, L";；\r\n", &context);
+            rule = wcstok_s(NULL, L";\uFF1B\r\n", &context);
             continue;
         }
 
         replaced_total += replace_all_wide(&text_wide, from, to);
-        rule = wcstok_s(NULL, L";；\r\n", &context);
+        rule = wcstok_s(NULL, L";\uFF1B\r\n", &context);
     }
 
     if (replaced_total > 0) {
