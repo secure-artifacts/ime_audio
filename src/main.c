@@ -138,6 +138,7 @@ typedef struct AppState {
     BOOL auto_stop_enabled;
     BOOL stop_after_current;
     BOOL translate_enabled;
+    BOOL current_had_voice;
 
     AsrBackendKind backend;
     AudioRecorderConfig recorder_config;
