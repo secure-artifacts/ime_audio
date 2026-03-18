@@ -2994,6 +2994,7 @@ static void create_main_controls(AppState *app) {
                                            (HMENU)(INT_PTR)IDC_EDIT_SHERPA_EXE,
                                            app->instance,
                                            NULL);
+    SendMessageW(app->sherpa_exe_edit, EM_SETLIMITTEXT, 2048, 0);
     apply_font(app->sherpa_exe_edit, font);
 
     label = CreateWindowW(L"STATIC", L"Sherpa 参数：", WS_CHILD | WS_VISIBLE,
@@ -3009,6 +3010,8 @@ static void create_main_controls(AppState *app) {
                                             (HMENU)(INT_PTR)IDC_EDIT_SHERPA_ARGS,
                                             app->instance,
                                             NULL);
+    SendMessageW(app->sherpa_args_edit, EM_SETLIMITTEXT, 4096, 0);
+    SendMessageW(app->sherpa_args_edit, EM_SETLIMITTEXT, 4096, 0);
     apply_font(app->sherpa_args_edit, font);
 
     label = CreateWindowW(L"STATIC", L"静音判停参数：", WS_CHILD | WS_VISIBLE,
