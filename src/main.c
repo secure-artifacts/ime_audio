@@ -62,6 +62,7 @@
 #define IDC_LIST_LOG 2033
 #define IDC_COMBO_MODEL 2041
 #define IDC_BTN_APPLY_MODEL 2042
+#define IDC_BTN_OPEN_CONFIG 2043
 
 #define IDC_FLOAT_TOGGLE 3001
 #define IDC_FLOAT_STATUS 3002
@@ -139,6 +140,7 @@ typedef struct AppState {
     BOOL stop_after_current;
     BOOL translate_enabled;
     BOOL current_had_voice;
+    int local_model_index;
 
     AsrBackendKind backend;
     AudioRecorderConfig recorder_config;
@@ -1231,6 +1233,10 @@ static void sync_runtime_settings_to_ui(AppState *app) {
         set_checked(app->translate_check, app->translate_enabled);
     }
 
+    if (app->model_combo) {
+        SendMessageW(app->model_combo, CB_SETCURSEL, app->local_model_index, 0);
+    }
+
     if (app->sherpa_exe_edit) {
         SetWindowTextW(app->sherpa_exe_edit, app->sherpa_exe);
     }
@@ -1278,6 +1284,13 @@ static BOOL apply_runtime_settings_from_ui(AppState *app, BOOL persist) {
     app->continuous_mode = app->continuous_check ? is_checked(app->continuous_check) : FALSE;
     app->auto_stop_enabled = app->auto_stop_check ? is_checked(app->auto_stop_check) : TRUE;
     app->translate_enabled = app->translate_check ? is_checked(app->translate_check) : FALSE;
+
+    if (app->model_combo) {
+        LRESULT sel = SendMessageW(app->model_combo, CB_GETCURSEL, 0, 0);
+        if (sel != CB_ERR) {
+            app->local_model_index = (int)sel;
+        }
+    }
 
     if (app->lang_combo) {
         selected_lang = SendMessageW(app->lang_combo, CB_GETCURSEL, 0, 0);
@@ -1834,7 +1847,8 @@ static void save_settings(AppState *app) {
              app->thinking_level,
              app->gladia_key,
              app->target_lang,
-             app->translate_enabled ? 1u : 0u);
+             app->translate_enabled ? 1u : 0u,
+             app->local_model_index);
 
     file_handle = CreateFileW(app->config_path,
                               GENERIC_WRITE,
@@ -1872,6 +1886,7 @@ static void load_settings(AppState *app) {
     wchar_t continuous_mode_text[16] = L"0";
     wchar_t auto_stop_text[16] = L"1";
     wchar_t translate_text[16] = L"0";
+    wchar_t local_model_text[16] = L"0";
     UINT mods = 0;
 
     if (!app) {
@@ -1909,6 +1924,7 @@ static void load_settings(AppState *app) {
     GetPrivateProfileStringW(L"settings", L"gladia_key", L"", app->gladia_key, _countof(app->gladia_key), app->config_path);
     GetPrivateProfileStringW(L"settings", L"target_lang", L"不翻译", app->target_lang, _countof(app->target_lang), app->config_path);
     GetPrivateProfileStringW(L"settings", L"translate_enabled", L"0", translate_text, _countof(translate_text), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"local_model_index", L"0", local_model_text, _countof(local_model_text), app->config_path);
 
     GetPrivateProfileStringW(L"settings", L"continuous_mode", L"0", continuous_mode_text, _countof(continuous_mode_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"auto_stop", L"1", auto_stop_text, _countof(auto_stop_text), app->config_path);
@@ -1928,6 +1944,7 @@ static void load_settings(AppState *app) {
     app->continuous_mode = wcstoul(continuous_mode_text, NULL, 10) ? TRUE : FALSE;
     app->auto_stop_enabled = wcstoul(auto_stop_text, NULL, 10) ? TRUE : FALSE;
     app->translate_enabled = wcstoul(translate_text, NULL, 10) ? TRUE : FALSE;
+    app->local_model_index = _wtoi(local_model_text);
     app->mic_device_id = (UINT)wcstoul(mic_dev_text, NULL, 10);
     app->recorder_config.device_id = app->mic_device_id;
     wcsncpy_s(app->replace_rules, _countof(app->replace_rules), replace_rules_text, _TRUNCATE);
@@ -2970,6 +2987,10 @@ static void create_main_controls(AppState *app) {
                                           370, 240, 150, 24, app->main_hwnd, (HMENU)(INT_PTR)IDC_BTN_APPLY_MODEL, app->instance, NULL);
     apply_font(btn_apply_model, font);
 
+    HWND btn_open_config = CreateWindowW(L"BUTTON", L"打开配置目录", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                          530, 240, 150, 24, app->main_hwnd, (HMENU)(INT_PTR)IDC_BTN_OPEN_CONFIG, app->instance, NULL);
+    apply_font(btn_open_config, font);
+
     label = CreateWindowW(L"STATIC", L"Sherpa 程序：", WS_CHILD | WS_VISIBLE,
                           20, 274, 110, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
@@ -3310,6 +3331,12 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         case IDC_BTN_APPLY_MODEL: {
             LRESULT sel = SendMessageW(app->model_combo, CB_GETCURSEL, 0, 0);
             apply_model_selection(app, (int)sel);
+            return 0;
+        }
+        case IDC_BTN_OPEN_CONFIG: {
+            wchar_t config_dir[MAX_PATH];
+            extract_parent_dir(app->config_path, config_dir, _countof(config_dir));
+            ShellExecuteW(NULL, L"open", config_dir, NULL, NULL, SW_SHOWNORMAL);
             return 0;
         }
         case IDC_BTN_INSTALL_SHERPA:
