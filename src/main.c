@@ -3296,6 +3296,12 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         case IDC_BTN_SELF_CHECK:
             run_self_check(app, TRUE);
             return 0;
+        case IDC_COMBO_MODEL:
+            if (HIWORD(wParam) == CBN_SELCHANGE) {
+                LRESULT sel = SendMessageW(app->model_combo, CB_GETCURSEL, 0, 0);
+                apply_model_selection(app, (int)sel);
+            }
+            return 0;
         case IDC_BTN_APPLY_MODEL: {
             LRESULT sel = SendMessageW(app->model_combo, CB_GETCURSEL, 0, 0);
             apply_model_selection(app, (int)sel);
