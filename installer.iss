@@ -1,6 +1,6 @@
 [Setup]
 AppName=Voice IME (语音输入助手)
-AppVersion=1.0.5
+AppVersion=1.0.13
 DefaultDirName={autopf}\Voice IME
 DefaultGroupName=Voice IME
 OutputDir=build\Installer
@@ -19,6 +19,7 @@ Name: "startup"; Description: "开机自动启动 (Run at Startup)"; GroupDescri
 [Files]
 Source: "build\Release\voice_ime.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "scripts\*"; DestDir: "{app}\scripts"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "voice_ime_template.ini"; DestDir: "{app}"; DestName: "voice_ime.ini"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Voice IME"; Filename: "{app}\voice_ime.exe"

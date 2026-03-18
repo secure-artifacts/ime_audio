@@ -2526,8 +2526,9 @@ static void toggle_recording(AppState *app, HWND target_hint) {
     if (app->state == VOICE_TRANSCRIBING) {
         app->stop_after_current = TRUE;
         app->pause_requested = TRUE;
-        set_status(app, L"已请求暂停：当前识别完成后将暂停。");
-        app_log_line(app, "pause requested while transcribing");
+        audio_abort();
+        set_status(app, L"已丢弃当前录音：正在等待处理结束并暂停...");
+        app_log_line(app, "pause requested while transcribing, recording aborted");
         return;
     }
 
@@ -2539,8 +2540,13 @@ static void toggle_recording(AppState *app, HWND target_hint) {
     }
 
     // VOICE_RECORDING 状态下按快捷键，请求暂停
-    app->pause_requested = TRUE;
-    stop_recording_and_transcribe(app, FALSE);
+    app->pause_requested = FALSE;
+    app->state = VOICE_PAUSED;
+    audio_abort();
+    if (app->float_status) SetWindowTextW(app->float_status, L"已暂停");
+    update_float_button(app);
+    set_status(app, L"已暂停录音并丢弃当前语音。");
+    app_log_line(app, "recording aborted and dropped due to pause request");
 }
 
 static void on_transcribe_done(AppState *app, TranscribeResult *result) {
@@ -2602,6 +2608,9 @@ static void on_transcribe_done(AppState *app, TranscribeResult *result) {
         if (result->text[0] == '\0') {
             set_status(app, L"未识别到有效语音。");
             app_log_line(app, "transcribe success but empty text");
+        } else if (app->state == VOICE_PAUSED) {
+            set_status(app, L"已丢弃暂停期间的识别结果。");
+            app_log_line(app, "transcribe completely dropped due to pause state");
         } else {
             apply_user_replace_rules(app, &result->text);
             trim_ascii_whitespace(result->text);
