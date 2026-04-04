@@ -189,6 +189,13 @@ static BOOL build_temp_wav_path(wchar_t *out_path, DWORD out_path_size) {
         return FALSE;
     }
 
+    {
+        wchar_t short_path[MAX_PATH];
+        if (GetShortPathNameW(temp_dir, short_path, MAX_PATH)) {
+            wcsncpy_s(temp_dir, MAX_PATH, short_path, _TRUNCATE);
+        }
+    }
+
     if (swprintf(out_path, out_path_size, L"%lsvoice_ime_record.wav", temp_dir) < 0) {
         return FALSE;
     }
@@ -202,6 +209,12 @@ static BOOL build_config_path(wchar_t *out_path, DWORD out_path_size) {
     wchar_t exe_path[MAX_PATH];
     wchar_t app_dir[MAX_PATH];
     GetModuleFileNameW(NULL, exe_path, MAX_PATH);
+    {
+        wchar_t short_path[MAX_PATH];
+        if (GetShortPathNameW(exe_path, short_path, MAX_PATH)) {
+            wcsncpy_s(exe_path, MAX_PATH, short_path, _TRUNCATE);
+        }
+    }
     extract_parent_dir(exe_path, app_dir, _countof(app_dir));
     if (swprintf(out_path, out_path_size, L"%ls\\voice_ime.ini", app_dir) > 0) {
         return TRUE;
@@ -832,8 +845,18 @@ static void add_ui_log(AppState *app, const wchar_t *text) {
     
     SYSTEMTIME st;
     GetLocalTime(&st);
+    
+    // Replace newlines with spaces for single-line listbox display
+    wchar_t clean_text[2048];
+    wcsncpy_s(clean_text, _countof(clean_text), text, _TRUNCATE);
+    for (int i = 0; clean_text[i] != L'\0'; i++) {
+        if (clean_text[i] == L'\r' || clean_text[i] == L'\n') {
+            clean_text[i] = L' ';
+        }
+    }
+    
     wchar_t line[2048];
-    swprintf(line, _countof(line), L"[%02u:%02u:%02u] %ls", st.wHour, st.wMinute, st.wSecond, text);
+    swprintf(line, _countof(line), L"[%02u:%02u:%02u] %ls", st.wHour, st.wMinute, st.wSecond, clean_text);
 
     LRESULT count = SendMessageW(app->log_list, LB_ADDSTRING, 0, (LPARAM)line);
     if (count != LB_ERR) {
@@ -1125,6 +1148,12 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
     grandparent_dir[0] = L'\0';
 
     GetModuleFileNameW(NULL, exe_path, MAX_PATH);
+    {
+        wchar_t short_path[MAX_PATH];
+        if (GetShortPathNameW(exe_path, short_path, MAX_PATH)) {
+            wcsncpy_s(exe_path, MAX_PATH, short_path, _TRUNCATE);
+        }
+    }
     extract_parent_dir(exe_path, app_dir, _countof(app_dir));
     if (app_dir[0] != L'\0') {
         extract_parent_dir(app_dir, parent_dir, _countof(parent_dir));
@@ -1167,9 +1196,9 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
 
         wcsncpy_s(app->sherpa_exe, _countof(app->sherpa_exe), exe_path, _TRUNCATE);
         if (is_cuda) {
-            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--provider=cuda --paraformer=%ls --tokens=%ls --num-threads=2 --decoding-method=greedy_search", model_path, tokens_path);
+            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--provider=cuda --paraformer=\"..\\..\\models\\paraformer-zh\\model.int8.onnx\" --tokens=\"..\\..\\models\\paraformer-zh\\tokens.txt\" --num-threads=2 --decoding-method=greedy_search");
         } else {
-            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--paraformer=%ls --tokens=%ls --num-threads=2 --decoding-method=greedy_search", model_path, tokens_path);
+            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--paraformer=\"..\\..\\models\\paraformer-zh\\model.int8.onnx\" --tokens=\"..\\..\\models\\paraformer-zh\\tokens.txt\" --num-threads=2 --decoding-method=greedy_search");
         }
 
         app_log_line(app, "auto-filled sherpa defaults from local third_party folder");
@@ -1549,6 +1578,12 @@ static void apply_model_selection(AppState *app, int sel) {
     HINSTANCE shell_result;
     
     GetModuleFileNameW(NULL, exe_path, MAX_PATH);
+    {
+        wchar_t short_path[MAX_PATH];
+        if (GetShortPathNameW(exe_path, short_path, MAX_PATH)) {
+            wcsncpy_s(exe_path, MAX_PATH, short_path, _TRUNCATE);
+        }
+    }
     extract_parent_dir(exe_path, app_dir, _countof(app_dir));
     
     parent_dir[0] = L'\0';
@@ -1603,11 +1638,11 @@ static void apply_model_selection(AppState *app, int sel) {
     }
     
     if (sel == 0) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--paraformer=%ls\\third_party\\sherpa\\models\\paraformer-zh\\model.int8.onnx --tokens=%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt --num-threads=2 --decoding-method=greedy_search", cuda_prefix, correct_root, correct_root);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--paraformer=\"..\\..\\models\\paraformer-zh\\model.int8.onnx\" --tokens=\"..\\..\\models\\paraformer-zh\\tokens.txt\" --num-threads=2 --decoding-method=greedy_search", cuda_prefix);
     } else if (sel == 1) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--encoder=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\encoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx\" --decoder=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\decoder-epoch-20-avg-1-chunk-16-left-128.onnx\" --joiner=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\joiner-epoch-20-avg-1-chunk-16-left-128.int8.onnx\" --tokens=\"%ls\\third_party\\sherpa\\models\\zipformer-zh\\tokens.txt\" --num-threads=2 --decoding-method=greedy_search", cuda_prefix, correct_root, correct_root, correct_root, correct_root);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--encoder=\"..\\..\\models\\zipformer-zh\\encoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx\" --decoder=\"..\\..\\models\\zipformer-zh\\decoder-epoch-20-avg-1-chunk-16-left-128.onnx\" --joiner=\"..\\..\\models\\zipformer-zh\\joiner-epoch-20-avg-1-chunk-16-left-128.int8.onnx\" --tokens=\"..\\..\\models\\zipformer-zh\\tokens.txt\" --num-threads=2 --decoding-method=greedy_search", cuda_prefix);
     } else if (sel == 2) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--funasr-nano-encoder-adaptor=\"%ls\\third_party\\sherpa\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"%ls\\third_party\\sherpa\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"%ls\\third_party\\sherpa\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"%ls\\third_party\\sherpa\\models\\funasr\\Qwen3-0.6B\" --tokens=\"%ls\\third_party\\sherpa\\models\\funasr\\tokens.txt\"", cuda_prefix, correct_root, correct_root, correct_root, correct_root, correct_root);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--funasr-nano-encoder-adaptor=\"..\\..\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"..\\..\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"..\\..\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"..\\..\\models\\funasr\\Qwen3-0.6B\" --tokens=\"..\\..\\models\\funasr\\tokens.txt\"", cuda_prefix);
     }
     
 
@@ -1629,8 +1664,7 @@ static void apply_model_selection(AppState *app, int sel) {
 
         if (sel == 1) { // Zipformer
             wchar_t append_args[1024];
-            wchar_t bpe_path[MAX_PATH];
-            swprintf(append_args, _countof(append_args), L" --hotwords-file=\\\x22%ls\\\x22 --hotwords-score=1.5", hotwords_path);
+            swprintf(append_args, _countof(append_args), L" --hotwords-file=\"..\\..\\..\\..\\hotwords.txt\" --hotwords-score=1.5");
             wcscat_s(app->sherpa_args, _countof(app->sherpa_args), append_args);
         } else if (sel == 2) { // FunASR
             wchar_t append_args[1024];
@@ -1702,6 +1736,12 @@ static BOOL launch_sherpa_installer(AppState *app) {
     }
 
     GetModuleFileNameW(NULL, exe_path, MAX_PATH);
+    {
+        wchar_t short_path[MAX_PATH];
+        if (GetShortPathNameW(exe_path, short_path, MAX_PATH)) {
+            wcsncpy_s(exe_path, MAX_PATH, short_path, _TRUNCATE);
+        }
+    }
     extract_parent_dir(exe_path, app_dir, _countof(app_dir));
     if (app_dir[0] == L'\0') {
         set_status(app, L"无法定位程序目录。");
@@ -2021,8 +2061,13 @@ static BOOL apply_hotkey_from_ui(AppState *app, BOOL persist) {
 
     GetWindowTextW(app->hotkey_edit, key_text, _countof(key_text));
     vk = parse_hotkey_key(key_text);
-    if (vk == 0) {
-        set_status(app, L"快捷键无效，请使用 A-Z、0-9、F1-F24、Enter 或 Space。");
+    
+    // Allow empty key if Ctrl and Win are selected
+    if (vk == 0 && key_text[0] == L'\0' && (mods & MOD_CONTROL) && (mods & MOD_WIN) && !(mods & MOD_ALT) && !(mods & MOD_SHIFT)) {
+        mods = MOD_CONTROL;
+        vk = VK_LWIN;
+    } else if (vk == 0) {
+        set_status(app, L"快捷键无效，请使用 A-Z、0-9、F1-F24、Enter 或 Space。若只需Ctrl+Win，清空此框即可。");
         return FALSE;
     }
 
@@ -2131,50 +2176,20 @@ static void show_tray_menu(AppState *app) {
 }
 
 static void update_floating_position(AppState *app) {
-    HWND foreground = NULL;
-    DWORD thread_id = 0;
-    GUITHREADINFO thread_info;
-    POINT caret_pos = {0, 0};
     RECT work_area;
-    BOOL has_caret = FALSE;
-    int x = 0;
-    int y = 0;
-    const int width = 12;
-    const int height = 12;
+    const int width = 160;
+    const int height = 40;
+    int x = 0, y = 0;
 
     if (!app || !app->float_hwnd) {
         return;
     }
 
-    foreground = GetForegroundWindow();
-    if (!foreground || is_our_window(app, foreground)) {
+    if (app->state == VOICE_IDLE) {
         if (IsWindowVisible(app->float_hwnd)) {
             ShowWindow(app->float_hwnd, SW_HIDE);
         }
         return;
-    }
-
-    ZeroMemory(&thread_info, sizeof(thread_info));
-    thread_info.cbSize = sizeof(thread_info);
-    thread_id = GetWindowThreadProcessId(foreground, NULL);
-
-    if (thread_id != 0 && GetGUIThreadInfo(thread_id, &thread_info)) {
-        if (thread_info.hwndFocus) {
-            if (thread_info.rcCaret.left != 0 || thread_info.rcCaret.top != 0) {
-                caret_pos.x = thread_info.rcCaret.left;
-                caret_pos.y = thread_info.rcCaret.bottom;
-                ClientToScreen(thread_info.hwndFocus, &caret_pos);
-                x = caret_pos.x + 5;
-                y = caret_pos.y + 5;
-                has_caret = TRUE;
-            }
-        }
-    }
-
-    if (!has_caret) {
-        GetCursorPos(&caret_pos);
-        x = caret_pos.x + 15;
-        y = caret_pos.y + 15;
     }
 
     if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work_area, 0)) {
@@ -2184,10 +2199,8 @@ static void update_floating_position(AppState *app) {
         work_area.bottom = GetSystemMetrics(SM_CYSCREEN);
     }
 
-    if (x + width > work_area.right) x = work_area.right - width;
-    if (x < work_area.left) x = work_area.left;
-    if (y + height > work_area.bottom) y = work_area.bottom - height;
-    if (y < work_area.top) y = work_area.top;
+    x = work_area.left + (work_area.right - work_area.left - width) / 2;
+    y = work_area.bottom - height - 60; // 60 pixels from bottom
 
     RECT current_rect;
     BOOL pos_changed = TRUE;
@@ -2231,6 +2244,11 @@ static DWORD WINAPI transcribe_thread_proc(LPVOID param) {
                                                     task->custom_prompt,
                                                     task->target_lang,
                                                     task->thinking_level,
+                                                    &result->text,
+                                                    &result->error_text);
+        } else if (task->backend == ASR_BACKEND_GLADIA) {
+            result->success = gladia_transcribe_wav(task->wav_path,
+                                                    task->api_key,
                                                     &result->text,
                                                     &result->error_text);
         } else {
@@ -2287,6 +2305,19 @@ static BOOL start_transcribing(AppState *app, HWND target_window) {
         api_key_utf8 = wide_to_utf8_alloc(api_key_wide);
         if (!api_key_utf8) {
             set_status(app, L"读取 API Key 失败。");
+            return FALSE;
+        }
+    } else if (app->backend == ASR_BACKEND_GLADIA) {
+        GetWindowTextW(app->gladia_key_edit, api_key_wide, _countof(api_key_wide));
+        trim_wide_whitespace(api_key_wide);
+        if (api_key_wide[0] == L'\0') {
+            set_status(app, L"请先填写 Gladia API Key。");
+            return FALSE;
+        }
+
+        api_key_utf8 = wide_to_utf8_alloc(api_key_wide);
+        if (!api_key_utf8) {
+            set_status(app, L"读取 Gladia Key 失败。");
             return FALSE;
         }
     } else if (app->backend == ASR_BACKEND_GEMINI) {
@@ -2487,6 +2518,9 @@ static void poll_recording_runtime(AppState *app) {
         return;
     }
 
+    // Redraw for waveform animation
+    update_float_button(app);
+
     if (app->float_status) {
         if (status.had_voice) {
             SetWindowTextW(app->float_status, L"录音中(有声音)");
@@ -2550,14 +2584,10 @@ static void toggle_recording(AppState *app, HWND target_hint) {
         return;
     }
 
-    // VOICE_RECORDING 状态下按快捷键，请求暂停
-    app->pause_requested = FALSE;
-    app->state = VOICE_PAUSED;
-    audio_abort();
-    if (app->float_status) SetWindowTextW(app->float_status, L"已暂停");
-    update_float_button(app);
-    set_status(app, L"已暂停录音并丢弃当前语音。");
-    app_log_line(app, "recording aborted and dropped due to pause request");
+    // VOICE_RECORDING 状态下按快捷键，结束录音并开始识别
+    set_status(app, L"结束录音，准备识别...");
+    app_log_line(app, "hotkey pressed while recording, stopping and transcribing");
+    stop_recording_and_transcribe(app, FALSE);
 }
 
 static void on_transcribe_done(AppState *app, TranscribeResult *result) {
@@ -2605,6 +2635,10 @@ static void on_transcribe_done(AppState *app, TranscribeResult *result) {
                 wchar_t short_error[160];
                 wcsncpy_s(short_error, _countof(short_error), error_wide, _TRUNCATE);
                 set_status(app, short_error);
+                
+                // Add the full error message to the UI log list
+                add_ui_log(app, error_wide);
+                
                 free(error_wide);
             } else {
                 set_status(app, L"识别失败。");
@@ -3231,21 +3265,62 @@ static LRESULT CALLBACK FloatWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         FillRect(hdc, &rc, bgBrush);
         DeleteObject(bgBrush);
 
-        COLORREF color = RGB(0, 120, 255); // Blue
+        COLORREF color = RGB(30, 30, 30); // Dark grey background for pill
         if (app) {
-            if (app->state == VOICE_RECORDING || app->state == VOICE_TRANSCRIBING) {
-                color = RGB(0, 220, 0); // Green
+            if (app->state == VOICE_RECORDING) {
+                color = RGB(0, 150, 255); // Blue when recording
+            } else if (app->state == VOICE_TRANSCRIBING) {
+                color = RGB(0, 200, 0); // Green when transcribing
             } else if (app->state == VOICE_PAUSED) {
-                color = RGB(255, 200, 0); // Yellow
+                color = RGB(255, 150, 0); // Orange
             }
         }
 
         HBRUSH brush = CreateSolidBrush(color);
-        HPEN pen = CreatePen(PS_SOLID, 1, RGB(255, 255, 255));
+        HPEN pen = CreatePen(PS_NULL, 0, RGB(0, 0, 0));
         HGDIOBJ oldBrush = SelectObject(hdc, brush);
         HGDIOBJ oldPen = SelectObject(hdc, pen);
 
-        Ellipse(hdc, rc.left, rc.top, rc.right, rc.bottom);
+        RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 40, 40);
+
+        if (app && app->state == VOICE_RECORDING) {
+            AudioRuntimeStatus status;
+            if (audio_get_runtime_status(&status)) {
+                int peak = status.peak_level;
+                if (peak > 10000) peak = 10000;
+                int bars = 5;
+                int bar_w = 6;
+                int spacing = 6;
+                int total_w = bars * bar_w + (bars - 1) * spacing;
+                int start_x = rc.left + (rc.right - rc.left - total_w) / 2;
+                int center_y = rc.top + (rc.bottom - rc.top) / 2;
+                
+                HBRUSH whiteBrush = CreateSolidBrush(RGB(255, 255, 255));
+                SelectObject(hdc, whiteBrush);
+                
+                for (int i = 0; i < bars; ++i) {
+                    int max_h = (rc.bottom - rc.top) - 16;
+                    int h = (peak * max_h / 10000);
+                    if (h < 4) h = 4;
+                    int var = (i % 2 == 0) ? (h * 3 / 4) : h;
+                    if (GetTickCount() % 100 < 50) var = (i % 2 != 0) ? (h * 3 / 4) : h;
+                    
+                    int y1 = center_y - var / 2;
+                    int y2 = center_y + var / 2;
+                    
+                    RECT barRc = { start_x + i * (bar_w + spacing), y1, start_x + i * (bar_w + spacing) + bar_w, y2 };
+                    RoundRect(hdc, barRc.left, barRc.top, barRc.right, barRc.bottom, 4, 4);
+                }
+                DeleteObject(whiteBrush);
+            }
+        } else if (app && (app->state == VOICE_TRANSCRIBING || app->state == VOICE_PAUSED)) {
+            SetTextColor(hdc, RGB(255, 255, 255));
+            SetBkMode(hdc, TRANSPARENT);
+            HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+            SelectObject(hdc, font);
+            const wchar_t* txt = (app->state == VOICE_TRANSCRIBING) ? L"识别中..." : L"已暂停";
+            DrawTextW(hdc, txt, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
 
         SelectObject(hdc, oldBrush);
         SelectObject(hdc, oldPen);
@@ -3438,6 +3513,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
     WNDCLASSEXW main_class;
     WNDCLASSEXW float_class;
     MSG message;
+
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 
     (void)hPrevInstance;
     (void)lpCmdLine;

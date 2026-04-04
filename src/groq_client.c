@@ -400,3 +400,211 @@ cleanup:
 void groq_free_text(char *text) {
     free(text);
 }
+
+BOOL gladia_transcribe_wav(const wchar_t *wav_path,
+                           const char *api_key,
+                           char **out_utf8_text,
+                           char **out_error_utf8) {
+    const char *boundary = "----VoiceImeBoundaryGladia7k9s7a";
+    const char *prefix_format =
+        "--%s\r\n"
+        "Content-Disposition: form-data; name=\"language_behavior\"\r\n\r\n"
+        "automatic single language\r\n"
+        "--%s\r\n"
+        "Content-Disposition: form-data; name=\"output_format\"\r\n\r\n"
+        "txt\r\n"
+        "--%s\r\n"
+        "Content-Disposition: form-data; name=\"audio\"; filename=\"record.wav\"\r\n"
+        "Content-Type: audio/wav\r\n\r\n";
+    const char *suffix_format = "\r\n--%s--\r\n";
+
+    unsigned char *wav_data = NULL;
+    DWORD wav_size = 0;
+    char *prefix = NULL;
+    char *suffix = NULL;
+    char *body = NULL;
+    size_t prefix_len = 0;
+    size_t suffix_len = 0;
+    size_t body_len = 0;
+
+    wchar_t *api_key_wide = NULL;
+    wchar_t *boundary_wide = NULL;
+    wchar_t *headers = NULL;
+    size_t header_len = 0;
+
+    HINTERNET session = NULL;
+    HINTERNET connect = NULL;
+    HINTERNET request = NULL;
+
+    DWORD status_code = 0;
+    DWORD status_size = sizeof(status_code);
+    char *response_body = NULL;
+    BOOL ok = FALSE;
+
+    if (!wav_path || !api_key || !out_utf8_text || api_key[0] == '\0') {
+        set_error_text(out_error_utf8, "Invalid arguments or empty Gladia API key");
+        return FALSE;
+    }
+
+    *out_utf8_text = NULL;
+    if (out_error_utf8) {
+        free(*out_error_utf8);
+        *out_error_utf8 = NULL;
+    }
+
+    if (!read_file_bytes(wav_path, &wav_data, &wav_size)) {
+        set_error_text(out_error_utf8, "Failed to read WAV file");
+        return FALSE;
+    }
+
+    prefix_len = (size_t)snprintf(NULL, 0, prefix_format, boundary, boundary, boundary);
+    suffix_len = (size_t)snprintf(NULL, 0, suffix_format, boundary);
+
+    prefix = (char *)malloc(prefix_len + 1);
+    suffix = (char *)malloc(suffix_len + 1);
+    if (!prefix || !suffix) {
+        set_error_text(out_error_utf8, "Out of memory while preparing multipart boundary");
+        goto cleanup;
+    }
+
+    snprintf(prefix, prefix_len + 1, prefix_format, boundary, boundary, boundary);
+    snprintf(suffix, suffix_len + 1, suffix_format, boundary);
+
+    body_len = prefix_len + wav_size + suffix_len;
+    if (body_len > (size_t)MAXDWORD) {
+        set_error_text(out_error_utf8, "WAV file too large for WinHTTP request body");
+        goto cleanup;
+    }
+
+    body = (char *)malloc(body_len);
+    if (!body) {
+        set_error_text(out_error_utf8, "Out of memory while preparing HTTP body");
+        goto cleanup;
+    }
+
+    memcpy(body, prefix, prefix_len);
+    memcpy(body + prefix_len, wav_data, wav_size);
+    memcpy(body + prefix_len + wav_size, suffix, suffix_len);
+
+    api_key_wide = utf8_to_wide(api_key);
+    boundary_wide = utf8_to_wide(boundary);
+    if (!api_key_wide || !boundary_wide) {
+        set_error_text(out_error_utf8, "Failed to convert API key or boundary to UTF-16");
+        goto cleanup;
+    }
+
+    header_len = wcslen(api_key_wide) + wcslen(boundary_wide) + 96;
+    headers = (wchar_t *)malloc((header_len + 1) * sizeof(wchar_t));
+    if (!headers) {
+        set_error_text(out_error_utf8, "Out of memory while building request headers");
+        goto cleanup;
+    }
+
+    swprintf(headers, header_len + 1,
+             L"x-gladia-key: %ls\r\nContent-Type: multipart/form-data; boundary=%ls\r\n",
+             api_key_wide, boundary_wide);
+
+    session = WinHttpOpen(L"VoiceIME/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                          WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) {
+        set_error_from_win32(out_error_utf8, "WinHttpOpen");
+        goto cleanup;
+    }
+
+    connect = WinHttpConnect(session, L"api.gladia.io", INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (!connect) {
+        set_error_from_win32(out_error_utf8, "WinHttpConnect");
+        goto cleanup;
+    }
+
+    request = WinHttpOpenRequest(connect, L"POST", L"/audio/text/audio-transcription/",
+                                 NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                 WINHTTP_FLAG_SECURE);
+    if (!request) {
+        set_error_from_win32(out_error_utf8, "WinHttpOpenRequest");
+        goto cleanup;
+    }
+
+    if (!WinHttpSendRequest(request, headers, (DWORD)-1L, body, (DWORD)body_len, (DWORD)body_len, 0)) {
+        set_error_from_win32(out_error_utf8, "WinHttpSendRequest");
+        goto cleanup;
+    }
+
+    if (!WinHttpReceiveResponse(request, NULL)) {
+        set_error_from_win32(out_error_utf8, "WinHttpReceiveResponse");
+        goto cleanup;
+    }
+
+    if (!WinHttpQueryHeaders(request,
+                             WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX,
+                             &status_code,
+                             &status_size,
+                             WINHTTP_NO_HEADER_INDEX)) {
+        set_error_from_win32(out_error_utf8, "WinHttpQueryHeaders");
+        goto cleanup;
+    }
+
+    if (!read_response_body(request, &response_body)) {
+        set_error_from_win32(out_error_utf8, "WinHttpReadData");
+        goto cleanup;
+    }
+
+    if (status_code < 200 || status_code >= 300) {
+        char status_text[128];
+        snprintf(status_text, sizeof(status_text), "Gladia request failed with HTTP %lu", (unsigned long)status_code);
+        set_error_with_detail(out_error_utf8, status_text, response_body);
+        goto cleanup;
+    }
+
+    if (response_body[0] == '\0') {
+        set_error_text(out_error_utf8, "Gladia returned empty response");
+        goto cleanup;
+    }
+
+    char *pred = strstr(response_body, "\"prediction\"");
+    if (pred) {
+        char *start = strchr(pred, ':');
+        if (start) {
+            start++;
+            while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') start++;
+            if (*start == '"') {
+                start++;
+                char *end = start;
+                while (*end && *end != '"') {
+                    // super simple unescape for \"
+                    if (*end == '\\' && *(end + 1) == '"') end++;
+                    end++;
+                }
+                *end = '\0';
+                
+                size_t ext_len = strlen(start);
+                *out_utf8_text = (char*)malloc(ext_len + 1);
+                if (*out_utf8_text) {
+                    memcpy(*out_utf8_text, start, ext_len + 1);
+                    ok = TRUE;
+                    goto cleanup;
+                }
+            }
+        }
+    }
+    
+    *out_utf8_text = response_body;
+    response_body = NULL;
+    ok = TRUE;
+
+cleanup:
+    if (request) WinHttpCloseHandle(request);
+    if (connect) WinHttpCloseHandle(connect);
+    if (session) WinHttpCloseHandle(session);
+
+    free(headers);
+    free(boundary_wide);
+    free(api_key_wide);
+    free(body);
+    free(suffix);
+    free(prefix);
+    free(wav_data);
+    free(response_body);
+    return ok;
+}
