@@ -53,9 +53,10 @@ static BOOL send_ctrl_v(void) {
 
 BOOL injector_paste_utf8(const char *utf8_text) {
     wchar_t *wide_text = NULL;
-    size_t bytes = 0;
-    HGLOBAL clipboard_mem = NULL;
-    wchar_t *mem_ptr = NULL;
+    size_t len = 0;
+    INPUT *inputs = NULL;
+    size_t i = 0;
+    UINT sent = 0;
 
     if (!utf8_text || utf8_text[0] == '\0') {
         return FALSE;
@@ -66,37 +67,38 @@ BOOL injector_paste_utf8(const char *utf8_text) {
         return FALSE;
     }
 
-    bytes = (wcslen(wide_text) + 1) * sizeof(wchar_t);
-    clipboard_mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
-    if (!clipboard_mem) {
+    len = wcslen(wide_text);
+    if (len == 0) {
         free(wide_text);
         return FALSE;
     }
 
-    mem_ptr = (wchar_t *)GlobalLock(clipboard_mem);
-    if (!mem_ptr) {
-        GlobalFree(clipboard_mem);
+    inputs = (INPUT *)calloc(len * 2, sizeof(INPUT));
+    if (!inputs) {
         free(wide_text);
         return FALSE;
     }
 
-    memcpy(mem_ptr, wide_text, bytes);
-    GlobalUnlock(clipboard_mem);
+    for (i = 0; i < len; ++i) {
+        wchar_t wch = wide_text[i];
+
+        // Key down
+        inputs[i * 2].type = INPUT_KEYBOARD;
+        inputs[i * 2].ki.wVk = 0;
+        inputs[i * 2].ki.wScan = wch;
+        inputs[i * 2].ki.dwFlags = KEYEVENTF_UNICODE;
+
+        // Key up
+        inputs[i * 2 + 1].type = INPUT_KEYBOARD;
+        inputs[i * 2 + 1].ki.wVk = 0;
+        inputs[i * 2 + 1].ki.wScan = wch;
+        inputs[i * 2 + 1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+    }
+
+    sent = SendInput((UINT)(len * 2), inputs, sizeof(INPUT));
+
+    free(inputs);
     free(wide_text);
 
-    if (!OpenClipboard(NULL)) {
-        GlobalFree(clipboard_mem);
-        return FALSE;
-    }
-
-    EmptyClipboard();
-    if (!SetClipboardData(CF_UNICODETEXT, clipboard_mem)) {
-        CloseClipboard();
-        GlobalFree(clipboard_mem);
-        return FALSE;
-    }
-
-    CloseClipboard();
-    Sleep(40);
-    return send_ctrl_v();
+    return sent == (UINT)(len * 2);
 }

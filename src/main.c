@@ -131,6 +131,7 @@ typedef struct AppState {
     UINT hotkey_mods;
     UINT hotkey_vk;
     UINT mic_device_id;
+    wchar_t mic_device_name[256];
     BOOL hotkey_registered;
     BOOL tray_added;
     BOOL exit_requested;
@@ -178,6 +179,7 @@ typedef struct TranscribeResult {
 static void trim_wide_whitespace(wchar_t *text);
 static void add_ui_log(AppState *app, const wchar_t *text);
 static void save_settings(AppState *app);
+static void refresh_mic_list(AppState *app);
 static char *wide_to_utf8_alloc(const wchar_t *wide_text);
 static wchar_t *utf8_to_wide_alloc(const char *utf8_text);
 
@@ -1856,6 +1858,7 @@ static void save_settings(AppState *app) {
              L"min_record_ms=%u\r\n"
              L"max_record_ms=%u\r\n"
              L"mic_device_id=%u\r\n"
+             L"mic_device_name=%ls\r\n"
              L"gemini_key=%ls\r\n"
              L"project_id=%ls\r\n"
              L"gemini_model=%ls\r\n"
@@ -1863,7 +1866,8 @@ static void save_settings(AppState *app) {
              L"thinking_level=%ls\r\n"
              L"gladia_key=%ls\r\n"
              L"target_lang=%ls\r\n"
-             L"translate_enabled=%u\r\n",
+             L"translate_enabled=%u\r\n"
+             L"local_model_index=%d\r\n",
              api_key,
              key_text,
              (unsigned)mods,
@@ -1879,6 +1883,7 @@ static void save_settings(AppState *app) {
              (unsigned)app->recorder_config.min_record_ms,
              (unsigned)app->recorder_config.max_record_ms,
              app->mic_device_id,
+             app->mic_device_name,
              app->gemini_key,
              app->project_id,
              app->gemini_model,
@@ -1912,8 +1917,8 @@ static void save_settings(AppState *app) {
 
 static void load_settings(AppState *app) {
     wchar_t api_key[512] = L"";
-    wchar_t key_text[32] = L"R";
-    wchar_t mods_text[32] = L"3";
+    wchar_t key_text[32] = L"Q";
+    wchar_t mods_text[32] = L"2";
     wchar_t backend_name[32] = L"groq";
     wchar_t sample_rate_text[32] = L"16000";
     wchar_t voice_threshold_text[32] = L"1400";
@@ -1948,8 +1953,8 @@ static void load_settings(AppState *app) {
     set_default_recorder_config(app);
 
     GetPrivateProfileStringW(L"settings", L"api_key", L"", api_key, _countof(api_key), app->config_path);
-    GetPrivateProfileStringW(L"settings", L"hotkey_key", L"R", key_text, _countof(key_text), app->config_path);
-    GetPrivateProfileStringW(L"settings", L"hotkey_mods", L"3", mods_text, _countof(mods_text), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"hotkey_key", L"Q", key_text, _countof(key_text), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"hotkey_mods", L"2", mods_text, _countof(mods_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"backend", L"groq", backend_name, _countof(backend_name), app->config_path);
     GetPrivateProfileStringW(L"settings", L"sherpa_exe", L"", app->sherpa_exe, _countof(app->sherpa_exe), app->config_path);
     GetPrivateProfileStringW(L"settings", L"sherpa_args", L"", app->sherpa_args, _countof(app->sherpa_args), app->config_path);
@@ -1973,10 +1978,11 @@ static void load_settings(AppState *app) {
     GetPrivateProfileStringW(L"settings", L"min_record_ms", L"900", min_record_text, _countof(min_record_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"max_record_ms", L"30000", max_record_text, _countof(max_record_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"mic_device_id", L"4294967295", mic_dev_text, _countof(mic_dev_text), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"mic_device_name", L"", app->mic_device_name, _countof(app->mic_device_name), app->config_path);
 
     mods = (UINT)wcstoul(mods_text, NULL, 10);
     if (mods == 0) {
-        mods = MOD_CONTROL | MOD_ALT;
+        mods = MOD_CONTROL;
     }
 
     app->backend = asr_parse_backend_name(backend_name);
@@ -2010,6 +2016,7 @@ static void load_settings(AppState *app) {
     set_checked(app->check_win, (mods & MOD_WIN) != 0);
     set_checked(app->translate_check, app->translate_enabled);
     sync_runtime_settings_to_ui(app);
+    refresh_mic_list(app);
     save_settings(app);
 
     app_log_line(app,
@@ -2784,6 +2791,7 @@ static void refresh_mic_list(AppState *app) {
     UINT num_devs = waveInGetNumDevs();
     WAVEINCAPSW caps;
     UINT i;
+    BOOL found = FALSE;
 
     if (!app || !app->mic_combo) return;
 
@@ -2796,14 +2804,40 @@ static void refresh_mic_list(AppState *app) {
         }
     }
 
-    if (app->mic_device_id == WAVE_MAPPER) {
-        SendMessageW(app->mic_combo, CB_SETCURSEL, 0, 0);
-    } else {
-        if (app->mic_device_id < num_devs) {
-            SendMessageW(app->mic_combo, CB_SETCURSEL, (WPARAM)app->mic_device_id + 1, 0);
-        } else {
+    // Try to match by physical name first
+    if (app->mic_device_name[0] != L'\0' && wcscmp(app->mic_device_name, L"系统默认录音设备") != 0) {
+        for (i = 0; i < num_devs; ++i) {
+            if (waveInGetDevCapsW(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
+                if (wcscmp(caps.szPname, app->mic_device_name) == 0) {
+                    SendMessageW(app->mic_combo, CB_SETCURSEL, (WPARAM)(i + 1), 0);
+                    app->mic_device_id = i;
+                    app->recorder_config.device_id = i;
+                    found = TRUE;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Fallback logic if name match wasn't found or was empty
+    if (!found) {
+        if (app->mic_device_id == WAVE_MAPPER) {
             SendMessageW(app->mic_combo, CB_SETCURSEL, 0, 0);
-            app->mic_device_id = WAVE_MAPPER;
+            app->mic_device_name[0] = L'\0';
+            app->recorder_config.device_id = WAVE_MAPPER;
+        } else {
+            if (app->mic_device_id < num_devs) {
+                SendMessageW(app->mic_combo, CB_SETCURSEL, (WPARAM)app->mic_device_id + 1, 0);
+                if (waveInGetDevCapsW(app->mic_device_id, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
+                    wcsncpy_s(app->mic_device_name, _countof(app->mic_device_name), caps.szPname, _TRUNCATE);
+                }
+                app->recorder_config.device_id = app->mic_device_id;
+            } else {
+                SendMessageW(app->mic_combo, CB_SETCURSEL, 0, 0);
+                app->mic_device_id = WAVE_MAPPER;
+                app->mic_device_name[0] = L'\0';
+                app->recorder_config.device_id = WAVE_MAPPER;
+            }
         }
     }
 }
@@ -3376,13 +3410,15 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         case IDC_COMBO_MIC:
             if (HIWORD(wParam) == CBN_SELCHANGE) {
                 LRESULT sel = SendMessageW(app->mic_combo, CB_GETCURSEL, 0, 0);
-                if (sel == 0) {
+                if (sel == 0 || sel == CB_ERR) {
                     app->mic_device_id = WAVE_MAPPER;
+                    app->mic_device_name[0] = L'\0';
                 } else {
                     app->mic_device_id = (UINT)(sel - 1);
+                    SendMessageW(app->mic_combo, CB_GETLBTEXT, (WPARAM)sel, (LPARAM)app->mic_device_name);
                 }
                 app->recorder_config.device_id = app->mic_device_id;
-                app_log_line(app, "mic_device_id changed to %u", app->mic_device_id);
+                app_log_line(app, "mic_device_id changed to %u, name: %ls", app->mic_device_id, app->mic_device_name);
                 save_settings(app);
             }
             return 0;
@@ -3430,6 +3466,9 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         default:
             break;
         }
+        break;
+    case WM_DEVICECHANGE:
+        refresh_mic_list(app);
         break;
     case WM_HOTKEY:
         if (wParam == HOTKEY_RECORD_ID) {
@@ -3587,9 +3626,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
     load_settings(&app);
     app_log_line(&app, "application startup");
     if (!apply_hotkey_from_ui(&app, FALSE)) {
-        SetWindowTextW(app.hotkey_edit, L"R");
+        SetWindowTextW(app.hotkey_edit, L"Q");
         set_checked(app.check_ctrl, TRUE);
-        set_checked(app.check_alt, TRUE);
+        set_checked(app.check_alt, FALSE);
         set_checked(app.check_shift, FALSE);
         set_checked(app.check_win, FALSE);
         apply_hotkey_from_ui(&app, FALSE);
