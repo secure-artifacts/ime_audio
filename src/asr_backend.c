@@ -696,49 +696,66 @@ BOOL sherpa_transcribe_wav_websocket(const wchar_t *wav_path,
     memcpy(payload + 8, float_samples, num_audio_bytes);
     free(float_samples);
 
-    // 3. Setup WinHTTP & WebSocket upgrade handshake
-    session = WinHttpOpen(L"VoiceIME/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                          WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!session) {
-        free(payload);
-        set_error_text(out_error_utf8, "WinHttpOpen failed");
-        return FALSE;
-    }
+    // 3. Setup WinHTTP & WebSocket upgrade handshake with auto-retry for slow booting machines
+    int retries = 10;
+    BOOL connected = FALSE;
+    for (int i = 0; i < retries; ++i) {
+        session = WinHttpOpen(L"VoiceIME/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!session) {
+            Sleep(500);
+            continue;
+        }
 
-    DWORD timeout = 2000;
-    WinHttpSetOption(session, WINHTTP_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
+        DWORD timeout = 1000;
+        WinHttpSetOption(session, WINHTTP_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
 
-    connect = WinHttpConnect(session, L"127.0.0.1", 6006, 0);
-    if (!connect) {
-        free(payload);
-        WinHttpCloseHandle(session);
-        set_error_text(out_error_utf8, "Failed to connect to local port 6006");
-        return FALSE;
-    }
+        connect = WinHttpConnect(session, L"127.0.0.1", 6006, 0);
+        if (!connect) {
+            WinHttpCloseHandle(session);
+            session = NULL;
+            Sleep(500);
+            continue;
+        }
 
-    request = WinHttpOpenRequest(connect, L"GET", L"/", NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
-    if (!request) {
-        free(payload);
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
-        set_error_text(out_error_utf8, "WinHttpOpenRequest failed");
-        return FALSE;
-    }
+        request = WinHttpOpenRequest(connect, L"GET", L"/", NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+        if (!request) {
+            WinHttpCloseHandle(connect);
+            connect = NULL;
+            WinHttpCloseHandle(session);
+            session = NULL;
+            Sleep(500);
+            continue;
+        }
 
-    if (!WinHttpSetOption(request, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, NULL, 0)) {
-        free(payload);
+        if (!WinHttpSetOption(request, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, NULL, 0)) {
+            WinHttpCloseHandle(request);
+            request = NULL;
+            WinHttpCloseHandle(connect);
+            connect = NULL;
+            WinHttpCloseHandle(session);
+            session = NULL;
+            Sleep(500);
+            continue;
+        }
+
+        if (WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+            connected = TRUE;
+            break;
+        }
+
         WinHttpCloseHandle(request);
+        request = NULL;
         WinHttpCloseHandle(connect);
+        connect = NULL;
         WinHttpCloseHandle(session);
-        set_error_text(out_error_utf8, "Failed to set upgrade to websocket option");
-        return FALSE;
+        session = NULL;
+        
+        Sleep(500); // Wait 500ms before retrying
     }
 
-    if (!WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+    if (!connected) {
         free(payload);
-        WinHttpCloseHandle(request);
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
         set_error_text(out_error_utf8, "Local WebSocket server is not running on port 6006.");
         return FALSE;
     }
