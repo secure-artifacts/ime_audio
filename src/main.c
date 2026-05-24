@@ -63,6 +63,7 @@
 #define IDC_COMBO_MODEL 2041
 #define IDC_BTN_APPLY_MODEL 2042
 #define IDC_BTN_OPEN_CONFIG 2043
+#define IDC_CHECK_SHERPA_DAEMON 2044
 
 #define IDC_FLOAT_TOGGLE 3001
 #define IDC_FLOAT_STATUS 3002
@@ -106,6 +107,7 @@ typedef struct AppState {
     HWND maxrec_edit;
     HWND sherpa_exe_edit;
     HWND sherpa_args_edit;
+    HWND sherpa_daemon_check;
     HWND replace_rules_edit;
     HWND selfcheck_label;
     HWND status_label;
@@ -142,12 +144,15 @@ typedef struct AppState {
     BOOL translate_enabled;
     BOOL current_had_voice;
     int local_model_index;
+    BOOL sherpa_daemon_mode;
 
     AsrBackendKind backend;
     AudioRecorderConfig recorder_config;
 
     VoiceState state;
     HANDLE worker_thread;
+    HANDLE sherpa_daemon_process;
+    DWORD sherpa_daemon_pid;
 
     HWND target_window;
     HWND follow_target_window;
@@ -167,6 +172,7 @@ typedef struct TranscribeTask {
     char *custom_prompt;
     char *target_lang;
     char *thinking_level;
+    BOOL sherpa_daemon_mode;
 } TranscribeTask;
 
 typedef struct TranscribeResult {
@@ -206,6 +212,7 @@ static BOOL build_temp_wav_path(wchar_t *out_path, DWORD out_path_size) {
 }
 
 static void extract_parent_dir(const wchar_t *path, wchar_t *out_dir, size_t out_len);
+static void ensure_sherpa_daemon_running(AppState *app);
 
 static BOOL build_config_path(wchar_t *out_path, DWORD out_path_size) {
     wchar_t exe_path[MAX_PATH];
@@ -1124,7 +1131,7 @@ static void set_default_recorder_config(AppState *app) {
     app->recorder_config.channels = 1;
     app->recorder_config.bits_per_sample = 16;
     app->recorder_config.voice_threshold = 1400;
-    app->recorder_config.silence_timeout_ms = 1500;
+    app->recorder_config.silence_timeout_ms = 1000;
     app->recorder_config.min_record_ms = 900;
     app->recorder_config.max_record_ms = 30000;
 }
@@ -1198,13 +1205,75 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
 
         wcsncpy_s(app->sherpa_exe, _countof(app->sherpa_exe), exe_path, _TRUNCATE);
         if (is_cuda) {
-            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--provider=cuda --paraformer=\"..\\..\\models\\paraformer-zh\\model.int8.onnx\" --tokens=\"..\\..\\models\\paraformer-zh\\tokens.txt\" --num-threads=2 --decoding-method=greedy_search");
+            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--provider=cuda --paraformer=\"..\\..\\models\\paraformer-zh\\model.int8.onnx\" --tokens=\"..\\..\\models\\paraformer-zh\\tokens.txt\" --num-threads=4 --decoding-method=greedy_search");
         } else {
-            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--paraformer=\"..\\..\\models\\paraformer-zh\\model.int8.onnx\" --tokens=\"..\\..\\models\\paraformer-zh\\tokens.txt\" --num-threads=2 --decoding-method=greedy_search");
+            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--paraformer=\"..\\..\\models\\paraformer-zh\\model.int8.onnx\" --tokens=\"..\\..\\models\\paraformer-zh\\tokens.txt\" --num-threads=4 --decoding-method=greedy_search");
         }
 
         app_log_line(app, "auto-filled sherpa defaults from local third_party folder");
         return;
+    }
+}
+
+static void ensure_sherpa_daemon_running(AppState *app) {
+    if (!app || !app->sherpa_daemon_mode) {
+        return;
+    }
+
+    if (app->sherpa_daemon_process) {
+        DWORD exit_code = 0;
+        if (GetExitCodeProcess(app->sherpa_daemon_process, &exit_code)) {
+            if (exit_code == STILL_ACTIVE) {
+                return;
+            }
+        }
+        CloseHandle(app->sherpa_daemon_process);
+        app->sherpa_daemon_process = NULL;
+        app->sherpa_daemon_pid = 0;
+    }
+
+    // Resolve the websocket server executable path by substituting the offline CLI name
+    wchar_t server_exe[2048] = L"";
+    if (app->sherpa_exe[0] == L'\0') {
+        return;
+    }
+
+    wcscpy_s(server_exe, _countof(server_exe), app->sherpa_exe);
+    wchar_t *p = wcsstr(server_exe, L"sherpa-onnx-offline.exe");
+    if (p) {
+        wcscpy_s(p, _countof(server_exe) - (p - server_exe), L"sherpa-onnx-offline-websocket-server.exe");
+    } else {
+        extract_parent_dir(app->sherpa_exe, server_exe, _countof(server_exe));
+        wcscat_s(server_exe, _countof(server_exe), L"\\sherpa-onnx-offline-websocket-server.exe");
+    }
+
+    if (!file_exists_non_dir(server_exe)) {
+        app_log_line(app, "Sherpa websocket server executable does not exist at %ls", server_exe);
+        return;
+    }
+
+    wchar_t cmd_line[4096];
+    swprintf(cmd_line, _countof(cmd_line), L"\"%ls\" %ls --port=6006", server_exe, app->sherpa_args);
+
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    ZeroMemory(&pi, sizeof(pi));
+
+    wchar_t working_dir[MAX_PATH];
+    extract_parent_dir(server_exe, working_dir, _countof(working_dir));
+
+    app_log_line(app, "Launching Sherpa WebSocket server daemon...");
+    if (CreateProcessW(NULL, cmd_line, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, working_dir[0] ? working_dir : NULL, &si, &pi)) {
+        app->sherpa_daemon_process = pi.hProcess;
+        app->sherpa_daemon_pid = pi.dwProcessId;
+        CloseHandle(pi.hThread);
+        app_log_line(app, "Sherpa WebSocket server daemon started successfully pid=%u", pi.dwProcessId);
+        // Sleep a short moment to allow the server to load models and bind port
+        Sleep(400);
+    } else {
+        app_log_line(app, "Failed to start Sherpa WebSocket server daemon error=%u", GetLastError());
     }
 }
 
@@ -1276,6 +1345,10 @@ static void sync_runtime_settings_to_ui(AppState *app) {
         SetWindowTextW(app->sherpa_args_edit, app->sherpa_args);
     }
 
+    if (app->sherpa_daemon_check) {
+        set_checked(app->sherpa_daemon_check, app->sherpa_daemon_mode);
+    }
+
     if (app->gemini_prompt_edit) {
         SetWindowTextW(app->gemini_prompt_edit, app->gemini_prompt);
     }
@@ -1315,6 +1388,7 @@ static BOOL apply_runtime_settings_from_ui(AppState *app, BOOL persist) {
     app->continuous_mode = app->continuous_check ? is_checked(app->continuous_check) : FALSE;
     app->auto_stop_enabled = app->auto_stop_check ? is_checked(app->auto_stop_check) : TRUE;
     app->translate_enabled = app->translate_check ? is_checked(app->translate_check) : FALSE;
+    app->sherpa_daemon_mode = app->sherpa_daemon_check ? is_checked(app->sherpa_daemon_check) : TRUE;
 
     if (app->model_combo) {
         LRESULT sel = SendMessageW(app->model_combo, CB_GETCURSEL, 0, 0);
@@ -1407,6 +1481,9 @@ static BOOL apply_runtime_settings_from_ui(AppState *app, BOOL persist) {
 
     if (persist) {
         save_settings(app);
+        if (app->backend == ASR_BACKEND_SHERPA && app->sherpa_daemon_mode) {
+            ensure_sherpa_daemon_running(app);
+        }
     }
 
     return TRUE;
@@ -1640,9 +1717,9 @@ static void apply_model_selection(AppState *app, int sel) {
     }
     
     if (sel == 0) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--paraformer=\"..\\..\\models\\paraformer-zh\\model.int8.onnx\" --tokens=\"..\\..\\models\\paraformer-zh\\tokens.txt\" --num-threads=2 --decoding-method=greedy_search", cuda_prefix);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--paraformer=\"..\\..\\models\\paraformer-zh\\model.int8.onnx\" --tokens=\"..\\..\\models\\paraformer-zh\\tokens.txt\" --num-threads=4 --decoding-method=greedy_search", cuda_prefix);
     } else if (sel == 1) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--encoder=\"..\\..\\models\\zipformer-zh\\encoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx\" --decoder=\"..\\..\\models\\zipformer-zh\\decoder-epoch-20-avg-1-chunk-16-left-128.onnx\" --joiner=\"..\\..\\models\\zipformer-zh\\joiner-epoch-20-avg-1-chunk-16-left-128.int8.onnx\" --tokens=\"..\\..\\models\\zipformer-zh\\tokens.txt\" --num-threads=2 --decoding-method=greedy_search", cuda_prefix);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--encoder=\"..\\..\\models\\zipformer-zh\\encoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx\" --decoder=\"..\\..\\models\\zipformer-zh\\decoder-epoch-20-avg-1-chunk-16-left-128.onnx\" --joiner=\"..\\..\\models\\zipformer-zh\\joiner-epoch-20-avg-1-chunk-16-left-128.int8.onnx\" --tokens=\"..\\..\\models\\zipformer-zh\\tokens.txt\" --num-threads=4 --decoding-method=greedy_search", cuda_prefix);
     } else if (sel == 2) {
         swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--funasr-nano-encoder-adaptor=\"..\\..\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"..\\..\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"..\\..\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"..\\..\\models\\funasr\\Qwen3-0.6B\" --tokens=\"..\\..\\models\\funasr\\tokens.txt\"", cuda_prefix);
     }
@@ -1867,7 +1944,8 @@ static void save_settings(AppState *app) {
              L"gladia_key=%ls\r\n"
              L"target_lang=%ls\r\n"
              L"translate_enabled=%u\r\n"
-             L"local_model_index=%d\r\n",
+             L"local_model_index=%d\r\n"
+             L"sherpa_daemon=%u\r\n",
              api_key,
              key_text,
              (unsigned)mods,
@@ -1892,7 +1970,8 @@ static void save_settings(AppState *app) {
              app->gladia_key,
              app->target_lang,
              app->translate_enabled ? 1u : 0u,
-             app->local_model_index);
+             app->local_model_index,
+             app->sherpa_daemon_mode ? 1u : 0u);
 
     file_handle = CreateFileW(app->config_path,
                               GENERIC_WRITE,
@@ -1922,7 +2001,7 @@ static void load_settings(AppState *app) {
     wchar_t backend_name[32] = L"groq";
     wchar_t sample_rate_text[32] = L"16000";
     wchar_t voice_threshold_text[32] = L"1400";
-    wchar_t silence_timeout_text[32] = L"1500";
+    wchar_t silence_timeout_text[32] = L"1000";
     wchar_t min_record_text[32] = L"900";
     wchar_t max_record_text[32] = L"30000";
     wchar_t mic_dev_text[32] = L"4294967295";
@@ -1931,6 +2010,7 @@ static void load_settings(AppState *app) {
     wchar_t auto_stop_text[16] = L"1";
     wchar_t translate_text[16] = L"0";
     wchar_t local_model_text[16] = L"0";
+    wchar_t sherpa_daemon_text[16] = L"1";
     UINT mods = 0;
 
     if (!app) {
@@ -1942,6 +2022,7 @@ static void load_settings(AppState *app) {
     app->auto_stop_enabled = TRUE;
     app->stop_after_current = FALSE;
     app->translate_enabled = FALSE;
+    app->sherpa_daemon_mode = TRUE;
     app->sherpa_exe[0] = L'\0';
     app->sherpa_args[0] = L'\0';
     app->replace_rules[0] = L'\0';
@@ -1969,12 +2050,13 @@ static void load_settings(AppState *app) {
     GetPrivateProfileStringW(L"settings", L"target_lang", L"不翻译", app->target_lang, _countof(app->target_lang), app->config_path);
     GetPrivateProfileStringW(L"settings", L"translate_enabled", L"0", translate_text, _countof(translate_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"local_model_index", L"0", local_model_text, _countof(local_model_text), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"sherpa_daemon", L"1", sherpa_daemon_text, _countof(sherpa_daemon_text), app->config_path);
 
     GetPrivateProfileStringW(L"settings", L"continuous_mode", L"0", continuous_mode_text, _countof(continuous_mode_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"auto_stop", L"1", auto_stop_text, _countof(auto_stop_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"sample_rate", L"16000", sample_rate_text, _countof(sample_rate_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"voice_threshold", L"1400", voice_threshold_text, _countof(voice_threshold_text), app->config_path);
-    GetPrivateProfileStringW(L"settings", L"silence_timeout_ms", L"1500", silence_timeout_text, _countof(silence_timeout_text), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"silence_timeout_ms", L"1000", silence_timeout_text, _countof(silence_timeout_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"min_record_ms", L"900", min_record_text, _countof(min_record_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"max_record_ms", L"30000", max_record_text, _countof(max_record_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"mic_device_id", L"4294967295", mic_dev_text, _countof(mic_dev_text), app->config_path);
@@ -1990,6 +2072,7 @@ static void load_settings(AppState *app) {
     app->auto_stop_enabled = wcstoul(auto_stop_text, NULL, 10) ? TRUE : FALSE;
     app->translate_enabled = wcstoul(translate_text, NULL, 10) ? TRUE : FALSE;
     app->local_model_index = _wtoi(local_model_text);
+    app->sherpa_daemon_mode = wcstoul(sherpa_daemon_text, NULL, 10) ? TRUE : FALSE;
     app->mic_device_id = (UINT)wcstoul(mic_dev_text, NULL, 10);
     app->recorder_config.device_id = app->mic_device_id;
     wcsncpy_s(app->replace_rules, _countof(app->replace_rules), replace_rules_text, _TRUNCATE);
@@ -2238,11 +2321,17 @@ static DWORD WINAPI transcribe_thread_proc(LPVOID param) {
     if (result) {
         result->target_window = task->target_window;
         if (task->backend == ASR_BACKEND_SHERPA) {
-            result->success = sherpa_transcribe_wav_cli(task->wav_path,
-                                                        task->sherpa_exe,
-                                                        task->sherpa_args,
-                                                        &result->text,
-                                                        &result->error_text);
+            if (task->sherpa_daemon_mode) {
+                result->success = sherpa_transcribe_wav_websocket(task->wav_path,
+                                                                  &result->text,
+                                                                  &result->error_text);
+            } else {
+                result->success = sherpa_transcribe_wav_cli(task->wav_path,
+                                                            task->sherpa_exe,
+                                                            task->sherpa_args,
+                                                            &result->text,
+                                                            &result->error_text);
+            }
         } else if (task->backend == ASR_BACKEND_GEMINI) {
             result->success = gemini_transcribe_wav(task->wav_path,
                                                     task->api_key,
@@ -2299,6 +2388,10 @@ static BOOL start_transcribing(AppState *app, HWND target_window) {
 
     if (!app) {
         return FALSE;
+    }
+
+    if (app->backend == ASR_BACKEND_SHERPA && app->sherpa_daemon_mode) {
+        ensure_sherpa_daemon_running(app);
     }
 
     if (app->backend == ASR_BACKEND_GROQ) {
@@ -2361,6 +2454,7 @@ static BOOL start_transcribing(AppState *app, HWND target_window) {
     wcscpy_s(task->sherpa_exe, _countof(task->sherpa_exe), app->sherpa_exe);
     wcscpy_s(task->sherpa_args, _countof(task->sherpa_args), app->sherpa_args);
     task->target_window = target_window;
+    task->sherpa_daemon_mode = app->sherpa_daemon_mode;
 
     task->translate_enabled = app->translate_enabled;
     if (app->translate_enabled) {
@@ -3058,6 +3152,12 @@ static void create_main_controls(AppState *app) {
                                           530, 240, 150, 24, app->main_hwnd, (HMENU)(INT_PTR)IDC_BTN_OPEN_CONFIG, app->instance, NULL);
     apply_font(btn_open_config, font);
 
+    app->sherpa_daemon_check = CreateWindowW(L"BUTTON", L"启用常驻服务模式（极速上屏）",
+                                             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                             690, 242, 210, 20, app->main_hwnd,
+                                             (HMENU)(INT_PTR)IDC_CHECK_SHERPA_DAEMON, app->instance, NULL);
+    apply_font(app->sherpa_daemon_check, font);
+
     label = CreateWindowW(L"STATIC", L"Sherpa 程序：", WS_CHILD | WS_VISIBLE,
                           20, 274, 110, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
@@ -3119,7 +3219,7 @@ static void create_main_controls(AppState *app) {
 
     app->silence_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
                                         L"EDIT",
-                                        L"1500",
+                                        L"1000",
                                         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                         400, 338, 80, 24,
                                         app->main_hwnd,
@@ -3400,6 +3500,16 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 save_settings(app);
             }
             return 0;
+        case IDC_CHECK_SHERPA_DAEMON:
+            if (HIWORD(wParam) == BN_CLICKED) {
+                app->sherpa_daemon_mode = is_checked(app->sherpa_daemon_check);
+                app_log_line(app, "sherpa_daemon_mode toggled to %d", app->sherpa_daemon_mode);
+                save_settings(app);
+                if (app->sherpa_daemon_mode && app->backend == ASR_BACKEND_SHERPA) {
+                    ensure_sherpa_daemon_running(app);
+                }
+            }
+            return 0;
         case IDC_CHECK_AUTO_STOP:
             if (HIWORD(wParam) == BN_CLICKED) {
                 app->auto_stop_enabled = is_checked(app->auto_stop_check);
@@ -3518,6 +3628,12 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_DESTROY:
         if (app) {
             KillTimer(hwnd, TIMER_FOLLOW_INPUT);
+            if (app->sherpa_daemon_process) {
+                TerminateProcess(app->sherpa_daemon_process, 0);
+                CloseHandle(app->sherpa_daemon_process);
+                app->sherpa_daemon_process = NULL;
+                app->sherpa_daemon_pid = 0;
+            }
             audio_abort();
 
             if (app->hotkey_registered) {
@@ -3625,6 +3741,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
 
     load_settings(&app);
     app_log_line(&app, "application startup");
+    if (app.backend == ASR_BACKEND_SHERPA && app.sherpa_daemon_mode) {
+        ensure_sherpa_daemon_running(&app);
+    }
     if (!apply_hotkey_from_ui(&app, FALSE)) {
         SetWindowTextW(app.hotkey_edit, L"Q");
         set_checked(app.check_ctrl, TRUE);

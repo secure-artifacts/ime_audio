@@ -19,4 +19,8 @@ BOOL sherpa_transcribe_wav_cli(const wchar_t *wav_path,
                                char **out_utf8_text,
                                char **out_error_utf8);
 
+BOOL sherpa_transcribe_wav_websocket(const wchar_t *wav_path,
+                                     char **out_utf8_text,
+                                     char **out_error_utf8);
+
 #endif

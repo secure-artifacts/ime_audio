@@ -14,7 +14,7 @@ add_executable(voice_ime WIN32
     src/voice_ime.rc
 )
 
-target_compile_definitions(voice_ime PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_compile_definitions(voice_ime PRIVATE _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=0x0602)
 if (MSVC)
     target_compile_options(voice_ime PRIVATE /utf-8)
 endif()

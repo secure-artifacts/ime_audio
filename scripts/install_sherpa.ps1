@@ -172,7 +172,7 @@ if (-not (Test-Path $exePath)) {
 
 $tokensPath = Join-Path $modelDir "tokens.txt"
 $paraformerPath = Join-Path $modelDir "model.int8.onnx"
-$sherpaArgs = '--tokens="{0}" --paraformer="{1}" --num-threads=2 --decoding-method=greedy_search' -f $tokensPath, $paraformerPath
+$sherpaArgs = '--tokens="{0}" --paraformer="{1}" --num-threads=4 --decoding-method=greedy_search' -f $tokensPath, $paraformerPath
 
 if ($ConfigureIni) {
     if ([string]::IsNullOrWhiteSpace($IniPath)) {

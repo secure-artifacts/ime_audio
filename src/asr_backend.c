@@ -1,9 +1,11 @@
 #include "asr_backend.h"
 
 #include <ctype.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <winhttp.h>
 
 #define SHERPA_OUTPUT_MAX (256 * 1024)
 
@@ -595,5 +597,264 @@ cleanup:
 
     free(command_line);
     free(output);
+    return ok;
+}
+
+BOOL sherpa_transcribe_wav_websocket(const wchar_t *wav_path,
+                                     char **out_utf8_text,
+                                     char **out_error_utf8) {
+    HANDLE file_handle = INVALID_HANDLE_VALUE;
+    LARGE_INTEGER file_size = {0};
+    unsigned char *wav_data = NULL;
+    DWORD bytes_read = 0;
+    BOOL ok = FALSE;
+
+    HINTERNET session = NULL;
+    HINTERNET connect = NULL;
+    HINTERNET request = NULL;
+    HINTERNET web_socket = NULL;
+
+    if (!wav_path || !out_utf8_text) {
+        set_error_text(out_error_utf8, "Invalid arguments for websocket transcriber");
+        return FALSE;
+    }
+
+    *out_utf8_text = NULL;
+    if (out_error_utf8) {
+        free(*out_error_utf8);
+        *out_error_utf8 = NULL;
+    }
+
+    // 1. Read WAV File
+    file_handle = CreateFileW(wav_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file_handle == INVALID_HANDLE_VALUE) {
+        set_error_text(out_error_utf8, "Failed to open WAV file");
+        return FALSE;
+    }
+
+    if (!GetFileSizeEx(file_handle, &file_size) || file_size.QuadPart <= 44 || file_size.QuadPart > 50 * 1024 * 1024) {
+        CloseHandle(file_handle);
+        set_error_text(out_error_utf8, "WAV file is invalid or too large");
+        return FALSE;
+    }
+
+    wav_data = (unsigned char *)malloc((size_t)file_size.QuadPart);
+    if (!wav_data) {
+        CloseHandle(file_handle);
+        set_error_text(out_error_utf8, "Out of memory reading WAV file");
+        return FALSE;
+    }
+
+    if (!ReadFile(file_handle, wav_data, (DWORD)file_size.QuadPart, &bytes_read, NULL) || bytes_read != (DWORD)file_size.QuadPart) {
+        free(wav_data);
+        CloseHandle(file_handle);
+        set_error_text(out_error_utf8, "Failed to read WAV bytes");
+        return FALSE;
+    }
+    CloseHandle(file_handle);
+
+    // Parse WAV Header (WAV fmt mono 16kHz 16-bit PCM has samples starting at byte 44)
+    int32_t sample_rate = *(int32_t *)(wav_data + 24);
+    int16_t bits_per_sample = *(int16_t *)(wav_data + 34);
+
+    if (bits_per_sample != 16) {
+        free(wav_data);
+        set_error_text(out_error_utf8, "Only 16-bit PCM WAV is supported by this client");
+        return FALSE;
+    }
+
+    DWORD pcm_bytes = bytes_read - 44;
+    DWORD num_samples = pcm_bytes / sizeof(int16_t);
+    int16_t *pcm_samples = (int16_t *)(wav_data + 44);
+
+    // Convert to Float32 samples scaled to [-1.0, 1.0]
+    float *float_samples = (float *)malloc(num_samples * sizeof(float));
+    if (!float_samples) {
+        free(wav_data);
+        set_error_text(out_error_utf8, "Out of memory allocating float buffer");
+        return FALSE;
+    }
+
+    for (DWORD i = 0; i < num_samples; ++i) {
+        float_samples[i] = (float)pcm_samples[i] / 32768.0f;
+    }
+    free(wav_data);
+
+    // 2. Prepare WebSocket Binary Package
+    // Package format: [sample_rate (int32)][num_audio_bytes (int32)][samples (float32...)]
+    DWORD num_audio_bytes = num_samples * sizeof(float);
+    DWORD payload_size = 4 + 4 + num_audio_bytes;
+    unsigned char *payload = (unsigned char *)malloc(payload_size);
+    if (!payload) {
+        free(float_samples);
+        set_error_text(out_error_utf8, "Out of memory allocating payload");
+        return FALSE;
+    }
+
+    *(int32_t *)(payload + 0) = sample_rate;
+    *(int32_t *)(payload + 4) = (int32_t)num_audio_bytes;
+    memcpy(payload + 8, float_samples, num_audio_bytes);
+    free(float_samples);
+
+    // 3. Setup WinHTTP & WebSocket upgrade handshake
+    session = WinHttpOpen(L"VoiceIME/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                          WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) {
+        free(payload);
+        set_error_text(out_error_utf8, "WinHttpOpen failed");
+        return FALSE;
+    }
+
+    DWORD timeout = 2000;
+    WinHttpSetOption(session, WINHTTP_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
+
+    connect = WinHttpConnect(session, L"127.0.0.1", 6006, 0);
+    if (!connect) {
+        free(payload);
+        WinHttpCloseHandle(session);
+        set_error_text(out_error_utf8, "Failed to connect to local port 6006");
+        return FALSE;
+    }
+
+    request = WinHttpOpenRequest(connect, L"GET", L"/", NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+    if (!request) {
+        free(payload);
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        set_error_text(out_error_utf8, "WinHttpOpenRequest failed");
+        return FALSE;
+    }
+
+    if (!WinHttpSetOption(request, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, NULL, 0)) {
+        free(payload);
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        set_error_text(out_error_utf8, "Failed to set upgrade to websocket option");
+        return FALSE;
+    }
+
+    if (!WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+        free(payload);
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        set_error_text(out_error_utf8, "Local WebSocket server is not running on port 6006.");
+        return FALSE;
+    }
+
+    if (!WinHttpReceiveResponse(request, NULL)) {
+        free(payload);
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        set_error_text(out_error_utf8, "Failed to receive handshake response");
+        return FALSE;
+    }
+
+    web_socket = WinHttpWebSocketCompleteUpgrade(request, 0);
+    if (!web_socket) {
+        free(payload);
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        set_error_text(out_error_utf8, "WebSocket upgrade could not be completed");
+        return FALSE;
+    }
+    WinHttpCloseHandle(request);
+    request = NULL;
+
+    // 4. Send Binary Audio Payload
+    DWORD ws_err = WinHttpWebSocketSend(web_socket, WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE, payload, payload_size);
+    free(payload);
+    if (ws_err != ERROR_SUCCESS) {
+        char err_msg[128];
+        snprintf(err_msg, sizeof(err_msg), "WinHttpWebSocketSend failed with error %lu", (unsigned long)ws_err);
+        set_error_text(out_error_utf8, err_msg);
+        goto cleanup;
+    }
+
+    // 5. Receive Response JSON
+    char *response_buffer = NULL;
+    size_t response_capacity = 4096;
+    size_t response_len = 0;
+    response_buffer = (char *)malloc(response_capacity);
+    if (!response_buffer) {
+        set_error_text(out_error_utf8, "Out of memory allocating response buffer");
+        goto cleanup;
+    }
+    response_buffer[0] = '\0';
+
+    for (;;) {
+        BYTE chunk[2048];
+        DWORD bytes_transferred = 0;
+        WINHTTP_WEB_SOCKET_BUFFER_TYPE buffer_type;
+
+        ws_err = WinHttpWebSocketReceive(web_socket, chunk, sizeof(chunk), &bytes_transferred, &buffer_type);
+        if (ws_err != ERROR_SUCCESS) {
+            char err_msg[128];
+            snprintf(err_msg, sizeof(err_msg), "WinHttpWebSocketReceive failed with error %lu", (unsigned long)ws_err);
+            set_error_text(out_error_utf8, err_msg);
+            free(response_buffer);
+            goto cleanup;
+        }
+
+        if (bytes_transferred == 0) {
+            break;
+        }
+
+        if (response_len + bytes_transferred >= response_capacity) {
+            response_capacity = response_len + bytes_transferred + 4096;
+            char *new_buf = (char *)realloc(response_buffer, response_capacity);
+            if (!new_buf) {
+                set_error_text(out_error_utf8, "Out of memory growing response buffer");
+                free(response_buffer);
+                goto cleanup;
+            }
+            response_buffer = new_buf;
+        }
+
+        memcpy(response_buffer + response_len, chunk, bytes_transferred);
+        response_len += bytes_transferred;
+        response_buffer[response_len] = '\0';
+
+        if (buffer_type == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE ||
+            buffer_type == WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE) {
+            break;
+        }
+    }
+
+    // 6. Send "Done" text and close WebSocket connection
+    WinHttpWebSocketSend(web_socket, WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE, (void *)"Done", 4);
+    WinHttpWebSocketClose(web_socket, WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, NULL, 0);
+
+    // 7. Parse the text field from JSON response
+    if (response_len > 0) {
+        *out_utf8_text = extract_json_text_field(response_buffer);
+        if (!*out_utf8_text) {
+            *out_utf8_text = response_buffer;
+            response_buffer = NULL;
+        }
+        ok = TRUE;
+    } else {
+        set_error_text(out_error_utf8, "WebSocket server returned empty result");
+    }
+    free(response_buffer);
+
+    // Trim trailing quotes or newlines if any
+    if (ok && *out_utf8_text) {
+        trim_ascii_whitespace(*out_utf8_text);
+    }
+
+cleanup:
+    if (web_socket) {
+        WinHttpCloseHandle(web_socket);
+    }
+    if (connect) {
+        WinHttpCloseHandle(connect);
+    }
+    if (session) {
+        WinHttpCloseHandle(session);
+    }
     return ok;
 }
