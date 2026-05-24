@@ -10,8 +10,6 @@
 
 #include "asr_backend.h"
 #include "audio_recorder.h"
-#include "groq_client.h"
-#include "gemini_client.h"
 #include "input_injector.h"
 
 #define MAIN_CLASS_NAME L"VoiceImeMainWindow"
@@ -1940,13 +1938,10 @@ static BOOL launch_sherpa_installer(AppState *app) {
 }
 
 static void save_settings(AppState *app) {
-    wchar_t api_key[512];
     wchar_t key_text[32];
     wchar_t replace_rules[2048];
     wchar_t content[16384];
     UINT mods = 0;
-    int bytes_needed = 0;
-    char *mb_content = NULL;
     HANDLE file_handle = INVALID_HANDLE_VALUE;
     DWORD written = 0;
 
@@ -1955,7 +1950,6 @@ static void save_settings(AppState *app) {
     }
 
     replace_rules[0] = L'\0';
-    GetWindowTextW(app->api_edit, api_key, _countof(api_key));
     GetWindowTextW(app->hotkey_edit, key_text, _countof(key_text));
     if (app->replace_rules_edit) {
         GetWindowTextW(app->replace_rules_edit, replace_rules, _countof(replace_rules));
@@ -1973,10 +1967,9 @@ static void save_settings(AppState *app) {
     swprintf(content,
              _countof(content),
              L"[settings]\r\n"
-             L"api_key=%ls\r\n"
              L"hotkey_key=%ls\r\n"
              L"hotkey_mods=%u\r\n"
-             L"backend=%ls\r\n"
+             L"backend=sherpa\r\n"
              L"sherpa_exe=%ls\r\n"
              L"sherpa_args=%ls\r\n"
              L"replace_rules=%ls\r\n"
@@ -1989,20 +1982,10 @@ static void save_settings(AppState *app) {
              L"max_record_ms=%u\r\n"
              L"mic_device_id=%u\r\n"
              L"mic_device_name=%ls\r\n"
-             L"gemini_key=%ls\r\n"
-             L"project_id=%ls\r\n"
-             L"gemini_model=%ls\r\n"
-             L"gemini_prompt=%ls\r\n"
-             L"thinking_level=%ls\r\n"
-             L"gladia_key=%ls\r\n"
-             L"target_lang=%ls\r\n"
-             L"translate_enabled=%u\r\n"
              L"local_model_index=%d\r\n"
              L"sherpa_daemon=%u\r\n",
-             api_key,
              key_text,
              (unsigned)mods,
-             asr_backend_name(app->backend),
              app->sherpa_exe,
              app->sherpa_args,
              app->replace_rules,
@@ -2015,14 +1998,6 @@ static void save_settings(AppState *app) {
              (unsigned)app->recorder_config.max_record_ms,
              app->mic_device_id,
              app->mic_device_name,
-             app->gemini_key,
-             app->project_id,
-             app->gemini_model,
-             app->gemini_prompt,
-             app->thinking_level,
-             app->gladia_key,
-             app->target_lang,
-             app->translate_enabled ? 1u : 0u,
              app->local_model_index,
              app->sherpa_daemon_mode ? 1u : 0u);
 
@@ -2048,10 +2023,9 @@ static void save_settings(AppState *app) {
 }
 
 static void load_settings(AppState *app) {
-    wchar_t api_key[512] = L"";
     wchar_t key_text[32] = L"Q";
     wchar_t mods_text[32] = L"2";
-    wchar_t backend_name[32] = L"groq";
+    wchar_t backend_name[32] = L"sherpa";
     wchar_t sample_rate_text[32] = L"16000";
     wchar_t voice_threshold_text[32] = L"1400";
     wchar_t silence_timeout_text[32] = L"1000";
@@ -2061,7 +2035,6 @@ static void load_settings(AppState *app) {
     wchar_t replace_rules_text[2048] = L"";
     wchar_t continuous_mode_text[16] = L"0";
     wchar_t auto_stop_text[16] = L"1";
-    wchar_t translate_text[16] = L"0";
     wchar_t local_model_text[16] = L"0";
     wchar_t sherpa_daemon_text[16] = L"1";
     UINT mods = 0;
@@ -2070,7 +2043,7 @@ static void load_settings(AppState *app) {
         return;
     }
 
-    app->backend = ASR_BACKEND_GROQ;
+    app->backend = ASR_BACKEND_SHERPA;
     app->continuous_mode = FALSE;
     app->auto_stop_enabled = TRUE;
     app->stop_after_current = FALSE;
@@ -2086,22 +2059,12 @@ static void load_settings(AppState *app) {
     app->target_lang[0] = L'\0';
     set_default_recorder_config(app);
 
-    GetPrivateProfileStringW(L"settings", L"api_key", L"", api_key, _countof(api_key), app->config_path);
     GetPrivateProfileStringW(L"settings", L"hotkey_key", L"Q", key_text, _countof(key_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"hotkey_mods", L"2", mods_text, _countof(mods_text), app->config_path);
-    GetPrivateProfileStringW(L"settings", L"backend", L"groq", backend_name, _countof(backend_name), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"backend", L"sherpa", backend_name, _countof(backend_name), app->config_path);
     GetPrivateProfileStringW(L"settings", L"sherpa_exe", L"", app->sherpa_exe, _countof(app->sherpa_exe), app->config_path);
     GetPrivateProfileStringW(L"settings", L"sherpa_args", L"", app->sherpa_args, _countof(app->sherpa_args), app->config_path);
     GetPrivateProfileStringW(L"settings", L"replace_rules", L"", replace_rules_text, _countof(replace_rules_text), app->config_path);
-
-    GetPrivateProfileStringW(L"settings", L"gemini_key", L"", app->gemini_key, _countof(app->gemini_key), app->config_path);
-    GetPrivateProfileStringW(L"settings", L"project_id", L"", app->project_id, _countof(app->project_id), app->config_path);
-    GetPrivateProfileStringW(L"settings", L"gemini_model", L"gemini-3.1-flash-lite-preview", app->gemini_model, _countof(app->gemini_model), app->config_path);
-    GetPrivateProfileStringW(L"settings", L"gemini_prompt", L"You are an AI text processing assistant.", app->gemini_prompt, _countof(app->gemini_prompt), app->config_path);
-    GetPrivateProfileStringW(L"settings", L"thinking_level", L"LOW", app->thinking_level, _countof(app->thinking_level), app->config_path);
-    GetPrivateProfileStringW(L"settings", L"gladia_key", L"", app->gladia_key, _countof(app->gladia_key), app->config_path);
-    GetPrivateProfileStringW(L"settings", L"target_lang", L"不翻译", app->target_lang, _countof(app->target_lang), app->config_path);
-    GetPrivateProfileStringW(L"settings", L"translate_enabled", L"0", translate_text, _countof(translate_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"local_model_index", L"0", local_model_text, _countof(local_model_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"sherpa_daemon", L"1", sherpa_daemon_text, _countof(sherpa_daemon_text), app->config_path);
 
@@ -2120,10 +2083,10 @@ static void load_settings(AppState *app) {
         mods = MOD_CONTROL;
     }
 
-    app->backend = asr_parse_backend_name(backend_name);
+    app->backend = ASR_BACKEND_SHERPA;
     app->continuous_mode = wcstoul(continuous_mode_text, NULL, 10) ? TRUE : FALSE;
     app->auto_stop_enabled = wcstoul(auto_stop_text, NULL, 10) ? TRUE : FALSE;
-    app->translate_enabled = wcstoul(translate_text, NULL, 10) ? TRUE : FALSE;
+    app->translate_enabled = FALSE;
     app->local_model_index = _wtoi(local_model_text);
     app->sherpa_daemon_mode = wcstoul(sherpa_daemon_text, NULL, 10) ? TRUE : FALSE;
     app->mic_device_id = (UINT)wcstoul(mic_dev_text, NULL, 10);
@@ -2141,23 +2104,28 @@ static void load_settings(AppState *app) {
 
     try_auto_fill_sherpa_defaults(app);
 
-    SetWindowTextW(app->api_edit, api_key);
-    SetWindowTextW(app->gemini_key_edit, app->gemini_key);
-    SetWindowTextW(app->project_id_edit, app->project_id);
-    SetWindowTextW(app->gladia_key_edit, app->gladia_key);
-    SetWindowTextW(app->hotkey_edit, key_text);
-    set_checked(app->check_ctrl, (mods & MOD_CONTROL) != 0);
-    set_checked(app->check_alt, (mods & MOD_ALT) != 0);
-    set_checked(app->check_shift, (mods & MOD_SHIFT) != 0);
-    set_checked(app->check_win, (mods & MOD_WIN) != 0);
-    set_checked(app->translate_check, app->translate_enabled);
+    if (app->hotkey_edit) {
+        SetWindowTextW(app->hotkey_edit, key_text);
+    }
+    if (app->check_ctrl) {
+        set_checked(app->check_ctrl, (mods & MOD_CONTROL) != 0);
+    }
+    if (app->check_alt) {
+        set_checked(app->check_alt, (mods & MOD_ALT) != 0);
+    }
+    if (app->check_shift) {
+        set_checked(app->check_shift, (mods & MOD_SHIFT) != 0);
+    }
+    if (app->check_win) {
+        set_checked(app->check_win, (mods & MOD_WIN) != 0);
+    }
+
     sync_runtime_settings_to_ui(app);
     refresh_mic_list(app);
     save_settings(app);
 
     app_log_line(app,
-                 "settings loaded backend=%s continuous=%u auto_stop=%u threshold=%d silence=%lu min=%lu max=%lu",
-                 app->backend == ASR_BACKEND_SHERPA ? "sherpa" : "groq",
+                 "settings loaded backend=sherpa continuous=%u auto_stop=%u threshold=%d silence=%lu min=%lu max=%lu",
                  app->continuous_mode ? 1u : 0u,
                  app->auto_stop_enabled ? 1u : 0u,
                  (int)app->recorder_config.voice_threshold,
@@ -2385,45 +2353,19 @@ static DWORD WINAPI transcribe_thread_proc(LPVOID param) {
                                                             &result->text,
                                                             &result->error_text);
             }
-        } else if (task->backend == ASR_BACKEND_GEMINI) {
-            result->success = gemini_transcribe_wav(task->wav_path,
-                                                    task->api_key,
-                                                    task->project_id,
-                                                    task->model_id,
-                                                    task->custom_prompt,
-                                                    task->target_lang,
-                                                    task->thinking_level,
-                                                    &result->text,
-                                                    &result->error_text);
-        } else if (task->backend == ASR_BACKEND_GLADIA) {
-            result->success = gladia_transcribe_wav(task->wav_path,
-                                                    task->api_key,
-                                                    &result->text,
-                                                    &result->error_text);
-        } else {
-            result->success = groq_transcribe_wav(task->wav_path,
-                                                  task->api_key,
-                                                  &result->text,
-                                                  &result->error_text);
         }
     }
 
-    if (task->api_key) free(task->api_key);
-    if (task->project_id) free(task->project_id);
-    if (task->model_id) free(task->model_id);
-    if (task->custom_prompt) free(task->custom_prompt);
-    if (task->target_lang) free(task->target_lang);
-    if (task->thinking_level) free(task->thinking_level);
     free(task);
 
     if (notify_hwnd) {
         PostMessageW(notify_hwnd, WMAPP_TRANSCRIBE_DONE, 0, (LPARAM)result);
     } else if (result) {
         if (result->text) {
-            groq_free_text(result->text);
+            free(result->text);
         }
         if (result->error_text) {
-            groq_free_text(result->error_text);
+            free(result->error_text);
         }
         free(result);
     }
@@ -2432,10 +2374,6 @@ static DWORD WINAPI transcribe_thread_proc(LPVOID param) {
 }
 
 static BOOL start_transcribing(AppState *app, HWND target_window) {
-    wchar_t api_key_wide[512];
-    char *api_key_utf8 = NULL;
-    char *project_id_utf8 = NULL;
-    char *model_id_utf8 = NULL;
     TranscribeTask *task = NULL;
     HANDLE worker = NULL;
 
@@ -2447,86 +2385,22 @@ static BOOL start_transcribing(AppState *app, HWND target_window) {
         ensure_sherpa_daemon_running(app);
     }
 
-    if (app->backend == ASR_BACKEND_GROQ) {
-        GetWindowTextW(app->api_edit, api_key_wide, _countof(api_key_wide));
-        trim_wide_whitespace(api_key_wide);
-        if (api_key_wide[0] == L'\0') {
-            set_status(app, L"请先填写 Groq API Key。");
-            return FALSE;
-        }
-
-        api_key_utf8 = wide_to_utf8_alloc(api_key_wide);
-        if (!api_key_utf8) {
-            set_status(app, L"读取 API Key 失败。");
-            return FALSE;
-        }
-    } else if (app->backend == ASR_BACKEND_GLADIA) {
-        GetWindowTextW(app->gladia_key_edit, api_key_wide, _countof(api_key_wide));
-        trim_wide_whitespace(api_key_wide);
-        if (api_key_wide[0] == L'\0') {
-            set_status(app, L"请先填写 Gladia API Key。");
-            return FALSE;
-        }
-
-        api_key_utf8 = wide_to_utf8_alloc(api_key_wide);
-        if (!api_key_utf8) {
-            set_status(app, L"读取 Gladia Key 失败。");
-            return FALSE;
-        }
-    } else if (app->backend == ASR_BACKEND_GEMINI) {
-        if (app->gemini_key[0] == L'\0') {
-            set_status(app, L"请先填写 Gemini API Key。");
-            return FALSE;
-        }
-        api_key_utf8 = wide_to_utf8_alloc(app->gemini_key);
-        if (app->project_id[0] != L'\0') {
-            project_id_utf8 = wide_to_utf8_alloc(app->project_id);
-        }
-        if (app->gemini_model[0] != L'\0') {
-            model_id_utf8 = wide_to_utf8_alloc(app->gemini_model);
-        } else {
-            model_id_utf8 = wide_to_utf8_alloc(L"gemini-2.5-flash");
-        }
-    }
-
     task = (TranscribeTask *)calloc(1, sizeof(TranscribeTask));
     if (!task) {
-        free(api_key_utf8);
-        free(project_id_utf8);
-        free(model_id_utf8);
         set_status(app, L"内存不足。");
         return FALSE;
     }
 
     task->notify_hwnd = app->main_hwnd;
     wcscpy_s(task->wav_path, _countof(task->wav_path), app->wav_path);
-    task->api_key = api_key_utf8;
-    task->project_id = project_id_utf8;
-    task->model_id = model_id_utf8;
-    task->backend = app->backend;
+    task->backend = ASR_BACKEND_SHERPA;
     wcscpy_s(task->sherpa_exe, _countof(task->sherpa_exe), app->sherpa_exe);
     wcscpy_s(task->sherpa_args, _countof(task->sherpa_args), app->sherpa_args);
     task->target_window = target_window;
     task->sherpa_daemon_mode = app->sherpa_daemon_mode;
 
-    task->translate_enabled = app->translate_enabled;
-    if (app->translate_enabled) {
-        if (app->target_lang[0] != L'\0' && wcscmp(app->target_lang, L"不翻译") != 0) {
-            task->target_lang = wide_to_utf8_alloc(app->target_lang);
-        }
-        if (app->gemini_prompt[0] != L'\0') {
-            task->custom_prompt = wide_to_utf8_alloc(app->gemini_prompt);
-        }
-        if (app->thinking_level[0] != L'\0') {
-            task->thinking_level = wide_to_utf8_alloc(app->thinking_level);
-        }
-    }
-
     worker = CreateThread(NULL, 0, transcribe_thread_proc, task, 0, NULL);
     if (!worker) {
-        free(task->api_key);
-        free(task->project_id);
-        free(task->model_id);
         free(task);
         set_status(app, L"启动识别线程失败。");
         return FALSE;
@@ -2537,16 +2411,8 @@ static BOOL start_transcribing(AppState *app, HWND target_window) {
     }
     app->worker_thread = worker;
     app->state = VOICE_TRANSCRIBING;
-    if (app->backend == ASR_BACKEND_SHERPA) {
-        set_status(app, L"本地识别中（Sherpa）...");
-    } else if (app->backend == ASR_BACKEND_GEMINI) {
-        set_status(app, L"云端识别中（Gemini）...");
-    } else {
-        set_status(app, L"云端识别中（Groq）...");
-    }
-    app_log_line(app,
-                 "transcribe start backend=%s",
-                 app->backend == ASR_BACKEND_SHERPA ? "sherpa" : (app->backend == ASR_BACKEND_GEMINI ? "gemini" : "groq"));
+    set_status(app, L"本地识别中（Sherpa）...");
+    app_log_line(app, "transcribe start backend=sherpa");
     update_float_button(app);
     return TRUE;
 }
@@ -2829,52 +2695,6 @@ static void on_transcribe_done(AppState *app, TranscribeResult *result) {
                     }
                 }
 
-                if (app->translate_enabled) {
-                    char *target_lang_utf8 = NULL;
-                    if (app->target_lang[0] != L'\0' && wcscmp(app->target_lang, L"不翻译") != 0) {
-                        target_lang_utf8 = wide_to_utf8_alloc(app->target_lang);
-                    }
-                    
-                    char *api_key_utf8 = wide_to_utf8_alloc(app->gemini_key);
-                    char *project_id_utf8 = app->project_id[0] != L'\0' ? wide_to_utf8_alloc(app->project_id) : NULL;
-                    char *model_id_utf8 = app->gemini_model[0] != L'\0' ? wide_to_utf8_alloc(app->gemini_model) : wide_to_utf8_alloc(L"gemini-2.5-flash");
-                    char *custom_prompt_utf8 = app->gemini_prompt[0] != L'\0' ? wide_to_utf8_alloc(app->gemini_prompt) : NULL;
-                    char *thinking_level_utf8 = app->thinking_level[0] != L'\0' ? wide_to_utf8_alloc(app->thinking_level) : wide_to_utf8_alloc(L"LOW");
-                    char *processed_text = NULL;
-                    char *process_error = NULL;
-
-                    if (api_key_utf8 && model_id_utf8) {
-                        set_status(app, target_lang_utf8 ? L"Gemini 翻译中..." : L"Gemini 文本处理中...");
-                        app_log_line(app, "start processing via gemini (target_lang=%s, thinking=%s)", target_lang_utf8 ? target_lang_utf8 : "none", thinking_level_utf8);
-                        if (gemini_process_text(api_key_utf8, project_id_utf8, model_id_utf8, custom_prompt_utf8, target_lang_utf8, thinking_level_utf8, result->text, &processed_text, &process_error)) {
-                            app_log_line(app, "gemini process success");
-                            free(result->text);
-                            result->text = processed_text;
-                            
-                            if (result->text && result->text[0] != '\0') {
-                                wchar_t *wide_proc = utf8_to_wide_alloc(result->text);
-                                if (wide_proc) {
-                                    wchar_t ui_msg[1024];
-                                    swprintf(ui_msg, _countof(ui_msg), L"AI处理: %ls", wide_proc);
-                                    add_ui_log(app, ui_msg);
-                                    free(wide_proc);
-                                }
-                            }
-                        } else {
-                            app_log_line(app, "gemini process failed: %s", process_error ? process_error : "unknown error");
-                            // Fallback to original text if processing fails
-                        }
-                    }
-
-                    if (api_key_utf8) free(api_key_utf8);
-                    if (project_id_utf8) free(project_id_utf8);
-                    if (model_id_utf8) free(model_id_utf8);
-                    if (target_lang_utf8) free(target_lang_utf8);
-                    if (custom_prompt_utf8) free(custom_prompt_utf8);
-                    if (thinking_level_utf8) free(thinking_level_utf8);
-                    if (process_error) free(process_error);
-                }
-
                 // 优化：实时获取当前最前台窗口，不再强制跳回录音前的旧窗口
                 HWND current_foreground = GetForegroundWindow();
                 HWND target = current_foreground;
@@ -2906,10 +2726,10 @@ static void on_transcribe_done(AppState *app, TranscribeResult *result) {
     }
 
     if (result->text) {
-        groq_free_text(result->text);
+        free(result->text);
     }
     if (result->error_text) {
-        groq_free_text(result->error_text);
+        free(result->error_text);
     }
     free(result);
 
@@ -2989,95 +2809,27 @@ static void refresh_mic_list(AppState *app) {
     }
 }
 
-static void load_gemini_models_to_combo(AppState *app) {
-    wchar_t models_path[MAX_PATH];
-    wchar_t app_dir[MAX_PATH];
-    FILE *f = NULL;
-    char line[256];
-    int loaded = 0;
-
-    if (!app || !app->gemini_model_combo) return;
-
-    extract_parent_dir(app->config_path, app_dir, _countof(app_dir));
-    swprintf(models_path, _countof(models_path), L"%ls\\gemini_models.txt", app_dir);
-
-    _wfopen_s(&f, models_path, L"rt");
-    if (f) {
-        while (fgets(line, sizeof(line), f)) {
-            wchar_t *wide_line = utf8_to_wide_alloc(line);
-            if (wide_line) {
-                trim_wide_whitespace(wide_line);
-                if (wide_line[0] != L'\0' && wide_line[0] != L'#') {
-                    SendMessageW(app->gemini_model_combo, CB_ADDSTRING, 0, (LPARAM)wide_line);
-                    loaded++;
-                }
-                free(wide_line);
-            }
-        }
-        fclose(f);
-    } else {
-        // If file doesn't exist, write defaults
-        _wfopen_s(&f, models_path, L"wt");
-        if (f) {
-            fputs("# 请在此文件每一行填写一个 Gemini 模型名称\n", f);
-            fputs("gemini-2.5-flash\n", f);
-            fputs("gemini-3.1-flash-lite-preview\n", f);
-            fputs("gemini-2.5-pro\n", f);
-            fputs("gemini-2.5-flash-native-audio-preview-12-2025\n", f);
-            fclose(f);
-        }
-        SendMessageW(app->gemini_model_combo, CB_ADDSTRING, 0, (LPARAM)L"gemini-2.5-flash");
-        SendMessageW(app->gemini_model_combo, CB_ADDSTRING, 0, (LPARAM)L"gemini-3.1-flash-lite-preview");
-        SendMessageW(app->gemini_model_combo, CB_ADDSTRING, 0, (LPARAM)L"gemini-2.5-pro");
-        SendMessageW(app->gemini_model_combo, CB_ADDSTRING, 0, (LPARAM)L"gemini-2.5-flash-native-audio-preview-12-2025");
-    }
-}
-
 static void create_main_controls(AppState *app) {
     HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
     HWND label = NULL;
     HWND button = NULL;
 
-    label = CreateWindowW(L"STATIC", L"云端 API Key：", WS_CHILD | WS_VISIBLE,
-                          20, 16, 100, 20, app->main_hwnd, NULL, app->instance, NULL);
-    apply_font(label, font);
-
-    app->api_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                                    WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_PASSWORD,
-                                    120, 12, 300, 24, app->main_hwnd,
-                                    (HMENU)(INT_PTR)IDC_EDIT_API, app->instance, NULL);
-    apply_font(app->api_edit, font);
-
     label = CreateWindowW(L"STATIC", L"录音设备：", WS_CHILD | WS_VISIBLE,
-                          440, 16, 80, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 16, 80, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->mic_combo = CreateWindowW(L"COMBOBOX", L"",
                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-                                   520, 12, 320, 200, app->main_hwnd,
+                                   100, 12, 320, 200, app->main_hwnd,
                                    (HMENU)(INT_PTR)IDC_COMBO_MIC, app->instance, NULL);
     apply_font(app->mic_combo, font);
-
-    label = CreateWindowW(L"STATIC", L"识别后端：", WS_CHILD | WS_VISIBLE,
-                          20, 50, 100, 20, app->main_hwnd, NULL, app->instance, NULL);
-    apply_font(label, font);
-
-    app->backend_combo = CreateWindowW(L"COMBOBOX", L"",
-                                       WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-                                       120, 46, 170, 200, app->main_hwnd,
-                                       (HMENU)(INT_PTR)IDC_COMBO_BACKEND, app->instance, NULL);
-    apply_font(app->backend_combo, font);
-    SendMessageW(app->backend_combo, CB_ADDSTRING, 0, (LPARAM)L"Groq (需 Key)");
-    SendMessageW(app->backend_combo, CB_ADDSTRING, 0, (LPARAM)L"Sherpa (本地)");
-    SendMessageW(app->backend_combo, CB_ADDSTRING, 0, (LPARAM)L"Gladia (需 Key)");
-    SendMessageW(app->backend_combo, CB_ADDSTRING, 0, (LPARAM)L"Gemini Native Audio");
 
     refresh_mic_list(app);
 
     app->continuous_check = CreateWindowW(L"BUTTON",
                                           L"自动监听（识别完自动继续）",
                                           WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                          330, 48, 260, 20, app->main_hwnd,
+                                          20, 48, 220, 20, app->main_hwnd,
                                           (HMENU)(INT_PTR)IDC_CHECK_CONTINUOUS,
                                           app->instance,
                                           NULL);
@@ -3086,111 +2838,21 @@ static void create_main_controls(AppState *app) {
     app->auto_stop_check = CreateWindowW(L"BUTTON",
                                          L"自动静音停录（关闭后需按快捷键结束）",
                                          WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                         590, 48, 250, 20, app->main_hwnd,
+                                         260, 48, 300, 20, app->main_hwnd,
                                          (HMENU)(INT_PTR)IDC_CHECK_AUTO_STOP,
                                          app->instance,
                                          NULL);
     apply_font(app->auto_stop_check, font);
 
-    // -- 新增的 Gemini/Gladia 配置区域 (Y = 82 ~ 178) --
-    label = CreateWindowW(L"STATIC", L"Gemini Key：", WS_CHILD | WS_VISIBLE,
+    // -- 本地模型配置区域 (整体上移 162 像素，从 Y = 78 开始) --
+    label = CreateWindowW(L"STATIC", L"本地模型：", WS_CHILD | WS_VISIBLE,
                           20, 82, 100, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
-    app->gemini_key_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                                           WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_PASSWORD,
-                                           120, 78, 300, 24, app->main_hwnd,
-                                           (HMENU)(INT_PTR)IDC_EDIT_GEMINI_KEY, app->instance, NULL);
-    apply_font(app->gemini_key_edit, font);
-
-    label = CreateWindowW(L"STATIC", L"Project ID：", WS_CHILD | WS_VISIBLE,
-                          440, 82, 80, 20, app->main_hwnd, NULL, app->instance, NULL);
-    apply_font(label, font);
-
-    app->project_id_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                                           WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                           520, 78, 200, 24, app->main_hwnd,
-                                           (HMENU)(INT_PTR)IDC_EDIT_PROJECT_ID, app->instance, NULL);
-    apply_font(app->project_id_edit, font);
-
-    label = CreateWindowW(L"STATIC", L"翻译目标语言：", WS_CHILD | WS_VISIBLE,
-                          20, 114, 100, 20, app->main_hwnd, NULL, app->instance, NULL);
-    apply_font(label, font);
-
-    app->lang_combo = CreateWindowW(L"COMBOBOX", L"",
-                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-                                    120, 110, 150, 200, app->main_hwnd,
-                                    (HMENU)(INT_PTR)IDC_COMBO_LANG, app->instance, NULL);
-    apply_font(app->lang_combo, font);
-    SendMessageW(app->lang_combo, CB_ADDSTRING, 0, (LPARAM)L"不翻译");
-    SendMessageW(app->lang_combo, CB_ADDSTRING, 0, (LPARAM)L"英语 (English)");
-    SendMessageW(app->lang_combo, CB_ADDSTRING, 0, (LPARAM)L"日语 (Japanese)");
-    SendMessageW(app->lang_combo, CB_ADDSTRING, 0, (LPARAM)L"韩语 (Korean)");
-    SendMessageW(app->lang_combo, CB_ADDSTRING, 0, (LPARAM)L"法语 (French)");
-    SendMessageW(app->lang_combo, CB_ADDSTRING, 0, (LPARAM)L"俄语 (Russian)");
-    SendMessageW(app->lang_combo, CB_ADDSTRING, 0, (LPARAM)L"德语 (German)");
-    SendMessageW(app->lang_combo, CB_ADDSTRING, 0, (LPARAM)L"西班牙语 (Spanish)");
-
-    app->translate_check = CreateWindowW(L"BUTTON", L"启用 Gemini 润色/处理/翻译",
-                                         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                         280, 112, 160, 20, app->main_hwnd,
-                                         (HMENU)(INT_PTR)IDC_CHECK_TRANSLATE, app->instance, NULL);
-    apply_font(app->translate_check, font);
-
-    label = CreateWindowW(L"STATIC", L"Gemini 模型：", WS_CHILD | WS_VISIBLE,
-                          440, 114, 80, 20, app->main_hwnd, NULL, app->instance, NULL);
-    apply_font(label, font);
-
-    app->gemini_model_combo = CreateWindowW(L"COMBOBOX", L"",
-                                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWN | CBS_AUTOHSCROLL,
-                                            520, 110, 320, 200, app->main_hwnd,
-                                            (HMENU)(INT_PTR)IDC_COMBO_GEMINI_MODEL, app->instance, NULL);
-    apply_font(app->gemini_model_combo, font);
-    load_gemini_models_to_combo(app);
-
-    label = CreateWindowW(L"STATIC", L"Gladia Key：", WS_CHILD | WS_VISIBLE,
-                          20, 146, 100, 20, app->main_hwnd, NULL, app->instance, NULL);
-    apply_font(label, font);
-
-    app->gladia_key_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                                           WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_PASSWORD,
-                                           120, 142, 300, 24, app->main_hwnd,
-                                           (HMENU)(INT_PTR)IDC_EDIT_GLADIA_KEY, app->instance, NULL);
-    apply_font(app->gladia_key_edit, font);
-
-    label = CreateWindowW(L"STATIC", L"思考模式(3.1+)：", WS_CHILD | WS_VISIBLE,
-                          440, 146, 100, 20, app->main_hwnd, NULL, app->instance, NULL);
-    apply_font(label, font);
-
-    app->thinking_combo = CreateWindowW(L"COMBOBOX", L"",
-                                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-                                        540, 142, 100, 200, app->main_hwnd,
-                                        (HMENU)(INT_PTR)IDC_COMBO_THINKING, app->instance, NULL);
-    apply_font(app->thinking_combo, font);
-    SendMessageW(app->thinking_combo, CB_ADDSTRING, 0, (LPARAM)L"NONE");
-    SendMessageW(app->thinking_combo, CB_ADDSTRING, 0, (LPARAM)L"LOW");
-    SendMessageW(app->thinking_combo, CB_ADDSTRING, 0, (LPARAM)L"MEDIUM");
-    SendMessageW(app->thinking_combo, CB_ADDSTRING, 0, (LPARAM)L"HIGH");
-
-    label = CreateWindowW(L"STATIC", L"Gemini 指令：", WS_CHILD | WS_VISIBLE,
-                          20, 178, 100, 20, app->main_hwnd, NULL, app->instance, NULL);
-    apply_font(label, font);
-
-    app->gemini_prompt_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                                           WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
-                                           120, 174, 720, 60, app->main_hwnd,
-                                           (HMENU)(INT_PTR)IDC_EDIT_GEMINI_PROMPT, app->instance, NULL);
-    apply_font(app->gemini_prompt_edit, font);
-    // -- 结束 --
-
-    label = CreateWindowW(L"STATIC", L"本地模型：", WS_CHILD | WS_VISIBLE,
-                          20, 244, 100, 20, app->main_hwnd, NULL, app->instance, NULL);
-    apply_font(label, font);
-
     app->model_combo = CreateWindowW(L"COMBOBOX", L"",
-                                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-                                        120, 240, 240, 200, app->main_hwnd,
-                                        (HMENU)(INT_PTR)IDC_COMBO_MODEL, app->instance, NULL);
+                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+                                     120, 78, 240, 200, app->main_hwnd,
+                                     (HMENU)(INT_PTR)IDC_COMBO_MODEL, app->instance, NULL);
     apply_font(app->model_combo, font);
     SendMessageW(app->model_combo, CB_ADDSTRING, 0, (LPARAM)L"默认模型 (Paraformer)");
     SendMessageW(app->model_combo, CB_ADDSTRING, 0, (LPARAM)L"Zipformer-multi-zh-hans (Transducer)");
@@ -3198,21 +2860,21 @@ static void create_main_controls(AppState *app) {
     SendMessageW(app->model_combo, CB_SETCURSEL, 0, 0);
 
     HWND btn_apply_model = CreateWindowW(L"BUTTON", L"下载并配置", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                          370, 240, 150, 24, app->main_hwnd, (HMENU)(INT_PTR)IDC_BTN_APPLY_MODEL, app->instance, NULL);
+                                         370, 78, 150, 24, app->main_hwnd, (HMENU)(INT_PTR)IDC_BTN_APPLY_MODEL, app->instance, NULL);
     apply_font(btn_apply_model, font);
 
     HWND btn_open_config = CreateWindowW(L"BUTTON", L"打开配置目录", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                          530, 240, 150, 24, app->main_hwnd, (HMENU)(INT_PTR)IDC_BTN_OPEN_CONFIG, app->instance, NULL);
+                                         530, 78, 150, 24, app->main_hwnd, (HMENU)(INT_PTR)IDC_BTN_OPEN_CONFIG, app->instance, NULL);
     apply_font(btn_open_config, font);
 
     app->sherpa_daemon_check = CreateWindowW(L"BUTTON", L"启用常驻服务模式（极速上屏）",
                                              WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                             690, 242, 210, 20, app->main_hwnd,
+                                             690, 80, 210, 20, app->main_hwnd,
                                              (HMENU)(INT_PTR)IDC_CHECK_SHERPA_DAEMON, app->instance, NULL);
     apply_font(app->sherpa_daemon_check, font);
 
     label = CreateWindowW(L"STATIC", L"Sherpa 程序：", WS_CHILD | WS_VISIBLE,
-                          20, 274, 110, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 112, 110, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->sherpa_exe_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
@@ -3220,7 +2882,7 @@ static void create_main_controls(AppState *app) {
                                            L"",
                                            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                            140,
-                                           270,
+                                           108,
                                            640,
                                            24,
                                            app->main_hwnd,
@@ -3231,35 +2893,34 @@ static void create_main_controls(AppState *app) {
     apply_font(app->sherpa_exe_edit, font);
 
     label = CreateWindowW(L"STATIC", L"Sherpa 参数：", WS_CHILD | WS_VISIBLE,
-                          20, 306, 110, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 144, 110, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->sherpa_args_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
                                             L"EDIT",
                                             L"",
                                             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                            140, 302, 640, 24,
+                                            140, 140, 640, 24,
                                             app->main_hwnd,
                                             (HMENU)(INT_PTR)IDC_EDIT_SHERPA_ARGS,
                                             app->instance,
                                             NULL);
     SendMessageW(app->sherpa_args_edit, EM_SETLIMITTEXT, 4096, 0);
-    SendMessageW(app->sherpa_args_edit, EM_SETLIMITTEXT, 4096, 0);
     apply_font(app->sherpa_args_edit, font);
 
     label = CreateWindowW(L"STATIC", L"静音判停参数：", WS_CHILD | WS_VISIBLE,
-                          20, 342, 120, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 180, 120, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     label = CreateWindowW(L"STATIC", L"音量阈值", WS_CHILD | WS_VISIBLE,
-                          140, 342, 70, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          140, 180, 70, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->threshold_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
                                           L"EDIT",
                                           L"1400",
                                           WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                          250, 338, 80, 24,
+                                          250, 176, 80, 24,
                                           app->main_hwnd,
                                           (HMENU)(INT_PTR)IDC_EDIT_THRESHOLD,
                                           app->instance,
@@ -3267,14 +2928,14 @@ static void create_main_controls(AppState *app) {
     apply_font(app->threshold_edit, font);
 
     label = CreateWindowW(L"STATIC", L"静音时长(ms)", WS_CHILD | WS_VISIBLE,
-                          310, 342, 90, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          310, 180, 90, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->silence_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
                                         L"EDIT",
                                         L"1000",
                                         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                        400, 338, 80, 24,
+                                        400, 176, 80, 24,
                                         app->main_hwnd,
                                         (HMENU)(INT_PTR)IDC_EDIT_SILENCE,
                                         app->instance,
@@ -3282,14 +2943,14 @@ static void create_main_controls(AppState *app) {
     apply_font(app->silence_edit, font);
 
     label = CreateWindowW(L"STATIC", L"最短录音(ms)", WS_CHILD | WS_VISIBLE,
-                          500, 342, 90, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          500, 180, 90, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->minrec_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
                                        L"EDIT",
                                        L"900",
                                        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                       590, 338, 80, 24,
+                                       590, 176, 80, 24,
                                        app->main_hwnd,
                                        (HMENU)(INT_PTR)IDC_EDIT_MINREC,
                                        app->instance,
@@ -3297,14 +2958,14 @@ static void create_main_controls(AppState *app) {
     apply_font(app->minrec_edit, font);
 
     label = CreateWindowW(L"STATIC", L"最长录音(ms)", WS_CHILD | WS_VISIBLE,
-                          680, 342, 90, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          680, 180, 90, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->maxrec_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
                                        L"EDIT",
                                        L"30000",
                                        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                       770, 338, 70, 24,
+                                       770, 176, 70, 24,
                                        app->main_hwnd,
                                        (HMENU)(INT_PTR)IDC_EDIT_MAXREC,
                                        app->instance,
@@ -3312,85 +2973,85 @@ static void create_main_controls(AppState *app) {
     apply_font(app->maxrec_edit, font);
 
     label = CreateWindowW(L"STATIC", L"快捷键（A-Z/0-9/F1-F24）：", WS_CHILD | WS_VISIBLE,
-                          20, 380, 220, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 218, 220, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->hotkey_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"R",
                                        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                       250, 376, 80, 24, app->main_hwnd,
+                                       250, 214, 80, 24, app->main_hwnd,
                                        (HMENU)(INT_PTR)IDC_EDIT_HOTKEY, app->instance, NULL);
     apply_font(app->hotkey_edit, font);
 
     label = CreateWindowW(L"STATIC", L"推理线程数：", WS_CHILD | WS_VISIBLE,
-                          345, 380, 85, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          345, 218, 85, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->threads_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"4",
                                         WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_AUTOHSCROLL,
-                                        430, 376, 60, 24, app->main_hwnd,
+                                        430, 214, 60, 24, app->main_hwnd,
                                         (HMENU)(INT_PTR)IDC_EDIT_THREADS, app->instance, NULL);
     apply_font(app->threads_edit, font);
 
     app->check_ctrl = CreateWindowW(L"BUTTON", L"Ctrl", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                    20, 412, 70, 20, app->main_hwnd,
+                                    20, 250, 70, 20, app->main_hwnd,
                                     (HMENU)(INT_PTR)IDC_CHECK_CTRL, app->instance, NULL);
     apply_font(app->check_ctrl, font);
 
     app->check_alt = CreateWindowW(L"BUTTON", L"Alt", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                   95, 412, 70, 20, app->main_hwnd,
+                                   95, 250, 70, 20, app->main_hwnd,
                                    (HMENU)(INT_PTR)IDC_CHECK_ALT, app->instance, NULL);
     apply_font(app->check_alt, font);
 
     app->check_shift = CreateWindowW(L"BUTTON", L"Shift", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                     170, 412, 70, 20, app->main_hwnd,
+                                     170, 250, 70, 20, app->main_hwnd,
                                      (HMENU)(INT_PTR)IDC_CHECK_SHIFT, app->instance, NULL);
     apply_font(app->check_shift, font);
 
     app->check_win = CreateWindowW(L"BUTTON", L"Win", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                   245, 412, 70, 20, app->main_hwnd,
+                                   245, 250, 70, 20, app->main_hwnd,
                                    (HMENU)(INT_PTR)IDC_CHECK_WIN, app->instance, NULL);
     apply_font(app->check_win, font);
 
     app->current_hotkey_label = CreateWindowW(L"STATIC", L"当前快捷键：未设置",
                                               WS_CHILD | WS_VISIBLE,
-                                              20, 440, 260, 20, app->main_hwnd,
+                                              20, 278, 260, 20, app->main_hwnd,
                                               (HMENU)(INT_PTR)IDC_LABEL_CURRENT_HOTKEY,
                                               app->instance, NULL);
     apply_font(app->current_hotkey_label, font);
 
     button = CreateWindowW(L"BUTTON", L"保存设置",
                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                           530, 376, 120, 30, app->main_hwnd,
+                           530, 214, 120, 30, app->main_hwnd,
                            (HMENU)(INT_PTR)IDC_BTN_APPLY, app->instance, NULL);
     apply_font(button, font);
 
     button = CreateWindowW(L"BUTTON", L"配置自检",
                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                           660, 376, 120, 30, app->main_hwnd,
+                           660, 214, 120, 30, app->main_hwnd,
                            (HMENU)(INT_PTR)IDC_BTN_SELF_CHECK, app->instance, NULL);
     apply_font(button, font);
 
     button = CreateWindowW(L"BUTTON", L"安装本地模型（Sherpa）",
                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                           530, 412, 250, 30, app->main_hwnd,
+                           530, 250, 250, 30, app->main_hwnd,
                            (HMENU)(INT_PTR)IDC_BTN_INSTALL_SHERPA, app->instance, NULL);
     apply_font(button, font);
 
     button = CreateWindowW(L"BUTTON", L"退出程序",
                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                           530, 448, 250, 24, app->main_hwnd,
+                           530, 286, 250, 24, app->main_hwnd,
                            (HMENU)(INT_PTR)IDC_BTN_EXIT, app->instance, NULL);
     apply_font(button, font);
 
     label = CreateWindowW(L"STATIC", L"术语纠错（错词=正词；多条用分号）：", WS_CHILD | WS_VISIBLE,
-                          20, 466, 260, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 304, 260, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->replace_rules_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
                                               L"EDIT",
                                               L"",
                                               WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                              280, 462, 240, 24,
+                                              280, 300, 240, 24,
                                               app->main_hwnd,
                                               (HMENU)(INT_PTR)IDC_EDIT_REPLACE_RULES,
                                               app->instance,
@@ -3400,7 +3061,7 @@ static void create_main_controls(AppState *app) {
     app->selfcheck_label = CreateWindowW(L"STATIC",
                                          L"尚未执行自检。",
                                          WS_CHILD | WS_VISIBLE | WS_BORDER,
-                                         20, 498, 820, 64,
+                                         20, 336, 820, 64,
                                          app->main_hwnd,
                                          (HMENU)(INT_PTR)IDC_LABEL_SELFCHECK,
                                          app->instance,
@@ -3409,29 +3070,29 @@ static void create_main_controls(AppState *app) {
 
     app->status_label = CreateWindowW(L"STATIC", L"就绪。",
                                       WS_CHILD | WS_VISIBLE,
-                                      20, 572, 820, 20, app->main_hwnd,
+                                      20, 410, 820, 20, app->main_hwnd,
                                       (HMENU)(INT_PTR)IDC_LABEL_STATUS, app->instance, NULL);
     apply_font(app->status_label, font);
 
     label = CreateWindowW(L"STATIC",
                           L"关闭窗口只会最小化到托盘；若要完全退出，请点击“退出程序”或托盘菜单“退出程序”。",
                           WS_CHILD | WS_VISIBLE,
-                          20, 600, 820, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 438, 820, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     label = CreateWindowW(L"STATIC",
                           L"说明：静音时长(ms)越小越容易触发自动停止；最长录音(ms)到达后会强制结束。",
                           WS_CHILD | WS_VISIBLE,
-                          20, 622, 820, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 460, 820, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     label = CreateWindowW(L"STATIC", L"识别与处理日志 (仅保留最新100条)：", WS_CHILD | WS_VISIBLE,
-                          20, 650, 400, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 488, 400, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->log_list = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
                                     WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOINTEGRALHEIGHT | LBS_HASSTRINGS | LBS_NOTIFY,
-                                    20, 670, 820, 150, app->main_hwnd,
+                                    20, 508, 820, 150, app->main_hwnd,
                                     (HMENU)(INT_PTR)IDC_LIST_LOG, app->instance, NULL);
     apply_font(app->log_list, font);
 }
@@ -3789,7 +3450,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
 
     app.main_hwnd = CreateWindowExW(0, MAIN_CLASS_NAME, APP_TITLE,
                                     WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-                                    CW_USEDEFAULT, CW_USEDEFAULT, 920, 860,
+                                    CW_USEDEFAULT, CW_USEDEFAULT, 920, 700,
                                     NULL, NULL, hInstance, &app);
     if (!app.main_hwnd) {
         return 1;
