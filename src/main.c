@@ -2240,7 +2240,7 @@ static BOOL add_tray_icon(AppState *app) {
     nid.uID = TRAY_ICON_ID;
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = WMAPP_TRAYICON;
-    nid.hIcon = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
+    nid.hIcon = LoadIconW(app->instance, (LPCWSTR)IDI_APPLICATION);
     wcscpy_s(nid.szTip, _countof(nid.szTip), L"语音输入助手");
 
     if (!Shell_NotifyIconW(NIM_ADD, &nid)) {
@@ -3765,6 +3765,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
     main_class.cbSize = sizeof(main_class);
     main_class.lpfnWndProc = MainWndProc;
     main_class.hInstance = hInstance;
+    main_class.hIcon = LoadIconW(hInstance, (LPCWSTR)IDI_APPLICATION);
+    main_class.hIconSm = LoadIconW(hInstance, (LPCWSTR)IDI_APPLICATION);
     main_class.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
     main_class.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     main_class.lpszClassName = MAIN_CLASS_NAME;
