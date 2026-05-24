@@ -64,6 +64,7 @@
 #define IDC_BTN_APPLY_MODEL 2042
 #define IDC_BTN_OPEN_CONFIG 2043
 #define IDC_CHECK_SHERPA_DAEMON 2044
+#define IDC_EDIT_THREADS 2045
 
 #define IDC_FLOAT_TOGGLE 3001
 #define IDC_FLOAT_STATUS 3002
@@ -108,6 +109,7 @@ typedef struct AppState {
     HWND sherpa_exe_edit;
     HWND sherpa_args_edit;
     HWND sherpa_daemon_check;
+    HWND threads_edit;
     HWND replace_rules_edit;
     HWND selfcheck_label;
     HWND status_label;
@@ -1215,6 +1217,44 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
     }
 }
 
+static int extract_num_threads(const wchar_t *args) {
+    if (!args) {
+        return 4;
+    }
+    const wchar_t *p = wcsstr(args, L"--num-threads=");
+    if (p) {
+        return _wtoi(p + wcslen(L"--num-threads="));
+    }
+    return 4;
+}
+
+static void update_num_threads_in_args(wchar_t *args, size_t args_count, int threads) {
+    if (!args) {
+        return;
+    }
+    wchar_t *p = wcsstr(args, L"--num-threads=");
+    if (p) {
+        const wchar_t *num_start = p + wcslen(L"--num-threads=");
+        const wchar_t *num_end = num_start;
+        while (*num_end >= L'0' && *num_end <= L'9') {
+            num_end++;
+        }
+        wchar_t temp[4096] = L"";
+        size_t prefix_len = num_start - args;
+        wcsncpy_s(temp, _countof(temp), args, prefix_len);
+        
+        wchar_t thread_str[32];
+        swprintf(thread_str, _countof(thread_str), L"%d", threads);
+        wcscat_s(temp, _countof(temp), thread_str);
+        wcscat_s(temp, _countof(temp), num_end);
+        wcsncpy_s(args, args_count, temp, _TRUNCATE);
+    } else {
+        wchar_t append_str[64];
+        swprintf(append_str, _countof(append_str), L" --num-threads=%d", threads);
+        wcscat_s(args, args_count, append_str);
+    }
+}
+
 static void ensure_sherpa_daemon_running(AppState *app) {
     if (!app || !app->sherpa_daemon_mode) {
         return;
@@ -1349,6 +1389,11 @@ static void sync_runtime_settings_to_ui(AppState *app) {
         set_checked(app->sherpa_daemon_check, app->sherpa_daemon_mode);
     }
 
+    if (app->threads_edit) {
+        int threads = extract_num_threads(app->sherpa_args);
+        write_dword_to_edit(app->threads_edit, (DWORD)threads);
+    }
+
     if (app->gemini_prompt_edit) {
         SetWindowTextW(app->gemini_prompt_edit, app->gemini_prompt);
     }
@@ -1446,6 +1491,14 @@ static BOOL apply_runtime_settings_from_ui(AppState *app, BOOL persist) {
     if (app->sherpa_args_edit) {
         GetWindowTextW(app->sherpa_args_edit, app->sherpa_args, _countof(app->sherpa_args));
         trim_wide_whitespace(app->sherpa_args);
+    }
+
+    if (app->threads_edit) {
+        DWORD threads = read_edit_dword(app->threads_edit, 4, 1, 64);
+        update_num_threads_in_args(app->sherpa_args, _countof(app->sherpa_args), (int)threads);
+        if (app->sherpa_args_edit) {
+            SetWindowTextW(app->sherpa_args_edit, app->sherpa_args);
+        }
     }
 
     if (app->replace_rules_edit) {
@@ -3267,6 +3320,16 @@ static void create_main_controls(AppState *app) {
                                        250, 376, 80, 24, app->main_hwnd,
                                        (HMENU)(INT_PTR)IDC_EDIT_HOTKEY, app->instance, NULL);
     apply_font(app->hotkey_edit, font);
+
+    label = CreateWindowW(L"STATIC", L"推理线程数：", WS_CHILD | WS_VISIBLE,
+                          345, 380, 85, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+
+    app->threads_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"4",
+                                        WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_AUTOHSCROLL,
+                                        430, 376, 60, 24, app->main_hwnd,
+                                        (HMENU)(INT_PTR)IDC_EDIT_THREADS, app->instance, NULL);
+    apply_font(app->threads_edit, font);
 
     app->check_ctrl = CreateWindowW(L"BUTTON", L"Ctrl", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                                     20, 412, 70, 20, app->main_hwnd,
