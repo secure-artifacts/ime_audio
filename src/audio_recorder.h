@@ -5,6 +5,7 @@
 
 typedef struct AudioRecorderConfig {
 	UINT device_id; // 新增：设备 ID
+	wchar_t device_name[256]; // 新增：设备名称
 	DWORD sample_rate;
 	WORD channels;
 	WORD bits_per_sample;

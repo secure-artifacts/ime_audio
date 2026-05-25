@@ -2612,6 +2612,7 @@ static BOOL start_recording_session(AppState *app, HWND target_hint) {
     }
     
     app->recorder_config.device_id = final_device_id;
+    wcsncpy_s(app->recorder_config.device_name, _countof(app->recorder_config.device_name), selected_name, _TRUNCATE);
 
     if (audio_start_recording(&app->recorder_config)) {
         app->target_window = target;
@@ -3562,6 +3563,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
     MSG message;
 
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
     (void)hPrevInstance;
     (void)lpCmdLine;
@@ -3676,5 +3678,6 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
         DispatchMessageW(&message);
     }
 
+    CoUninitialize();
     return (int)message.wParam;
 }
