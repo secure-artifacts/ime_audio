@@ -13,3 +13,5 @@ third_party/sherpa/filelist.txt
 third_party/sherpa/run-noarg.txt
 third_party/sherpa/sherpa-onnx-v*/
 third_party/sherpa/models/
+third_party/sherpa/sherpa-onnx-qwen3-asr-*/
+

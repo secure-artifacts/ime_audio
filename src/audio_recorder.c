@@ -31,6 +31,7 @@ static DWORD g_last_peak = 0;
 
 static ULONGLONG g_start_ms = 0;
 static ULONGLONG g_last_voice_ms = 0;
+static double g_noise_floor = 0.0;
 
 static SHORT g_voice_threshold = 1400;
 static DWORD g_silence_timeout_ms = 1500;
@@ -161,6 +162,18 @@ static BOOL write_wav_file(const wchar_t *path) {
     DWORD byte_rate = g_format.nAvgBytesPerSec;
     WORD block_align = g_format.nBlockAlign;
 
+    if (g_has_voice && g_start_ms > 0 && g_last_voice_ms >= g_start_ms) {
+        ULONGLONG speech_ms = (g_last_voice_ms - g_start_ms) + 400; // 400ms safety margin
+        DWORD bytes_per_ms = g_format.nAvgBytesPerSec / 1000;
+        if (bytes_per_ms > 0) {
+            DWORD speech_bytes = (DWORD)speech_ms * bytes_per_ms;
+            speech_bytes = (speech_bytes / g_format.nBlockAlign) * g_format.nBlockAlign;
+            if (speech_bytes < data_size) {
+                data_size = speech_bytes;
+            }
+        }
+    }
+
     if (!path) {
         return FALSE;
     }
@@ -211,6 +224,7 @@ static void reset_recording_data(void) {
     g_last_peak = 0;
     g_start_ms = 0;
     g_last_voice_ms = 0;
+    g_noise_floor = 0.0;
 }
 
 static void CALLBACK wave_in_proc(HWAVEIN hwi, UINT msg, DWORD_PTR instance, DWORD_PTR param1, DWORD_PTR param2) {
@@ -241,13 +255,29 @@ static void CALLBACK wave_in_proc(HWAVEIN hwi, UINT msg, DWORD_PTR instance, DWO
 
         if (g_start_ms == 0) {
             g_start_ms = now_ms;
+            g_noise_floor = (double)peak;
         }
         if (g_last_voice_ms == 0) {
             g_last_voice_ms = now_ms;
         }
 
+        // Track background noise floor using an asymmetric filter (fast down, slow up)
+        if ((double)peak < g_noise_floor) {
+            g_noise_floor = g_noise_floor * 0.2 + (double)peak * 0.8;
+        } else {
+            g_noise_floor = g_noise_floor * 0.995 + (double)peak * 0.005;
+        }
+
+        // Cap the noise floor influence to avoid desensitizing in extremely noisy environments
+        double capped_noise = g_noise_floor;
+        if (capped_noise > 3000.0) {
+            capped_noise = 3000.0;
+        }
+
+        DWORD adaptive_threshold = (DWORD)g_voice_threshold + (DWORD)capped_noise;
+
         g_last_peak = peak;
-        if (peak >= (DWORD)g_voice_threshold) {
+        if (peak >= adaptive_threshold) {
             g_last_voice_ms = now_ms;
             if (g_voice_peak_hit_count < VOICE_ACTIVATION_FRAMES) {
                 g_voice_peak_hit_count++;
@@ -439,8 +469,20 @@ BOOL audio_save_chunk_and_continue(const wchar_t *wav_path) {
         return FALSE;
     }
 
-    // 克隆当前 PCM 缓冲区，以便识别使用
+    // 克隆当前 PCM 缓冲区，并截断尾部静音以避免背景杂音干扰
     temp_size = g_pcm_size;
+    if (g_has_voice && g_start_ms > 0 && g_last_voice_ms >= g_start_ms) {
+        ULONGLONG speech_ms = (g_last_voice_ms - g_start_ms) + 400; // 400ms安全余量
+        DWORD bytes_per_ms = g_format.nAvgBytesPerSec / 1000;
+        if (bytes_per_ms > 0) {
+            DWORD speech_bytes = (DWORD)speech_ms * bytes_per_ms;
+            speech_bytes = (speech_bytes / g_format.nBlockAlign) * g_format.nBlockAlign;
+            if (speech_bytes < temp_size) {
+                temp_size = speech_bytes;
+            }
+        }
+    }
+
     temp_pcm = (BYTE *)malloc(temp_size);
     if (temp_pcm) {
         memcpy(temp_pcm, g_pcm_data, temp_size);
