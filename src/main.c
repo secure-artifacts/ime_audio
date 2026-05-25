@@ -63,6 +63,7 @@
 #define IDC_BTN_OPEN_CONFIG 2043
 #define IDC_CHECK_SHERPA_DAEMON 2044
 #define IDC_EDIT_THREADS 2045
+#define IDC_CHECK_SHERPA_GPU 2046
 
 #define IDC_FLOAT_TOGGLE 3001
 #define IDC_FLOAT_STATUS 3002
@@ -108,6 +109,7 @@ typedef struct AppState {
     HWND sherpa_args_edit;
     HWND sherpa_daemon_check;
     HWND threads_edit;
+    HWND sherpa_gpu_check;
     HWND replace_rules_edit;
     HWND selfcheck_label;
     HWND status_label;
@@ -145,6 +147,7 @@ typedef struct AppState {
     BOOL current_had_voice;
     int local_model_index;
     BOOL sherpa_daemon_mode;
+    BOOL use_gpu;
 
     AsrBackendKind backend;
     AudioRecorderConfig recorder_config;
@@ -1136,6 +1139,76 @@ static void set_default_recorder_config(AppState *app) {
     app->recorder_config.max_record_ms = 30000;
 }
 
+static BOOL check_cuda_support(const wchar_t *exe_path, const wchar_t *model_path, const wchar_t *tokens_path) {
+    wchar_t cmd[4096];
+    swprintf(cmd, _countof(cmd), L"\"%ls\" --provider=cuda --paraformer=\"%ls\" --tokens=\"%ls\" \"nonexistent_test_cuda.wav\"",
+             exe_path, model_path, tokens_path);
+
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    ZeroMemory(&pi, sizeof(pi));
+
+    wchar_t working_dir[MAX_PATH];
+    extract_parent_dir(exe_path, working_dir, _countof(working_dir));
+
+    if (!CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, working_dir[0] ? working_dir : NULL, &si, &pi)) {
+        return FALSE;
+    }
+
+    // Wait up to 1000ms. If it's still running, it loaded DLLs successfully and is loading the model (CUDA is working).
+    DWORD wait_res = WaitForSingleObject(pi.hProcess, 1000);
+    if (wait_res == WAIT_TIMEOUT) {
+        TerminateProcess(pi.hProcess, 0);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return TRUE;
+    }
+
+    DWORD exit_code = 0;
+    GetExitCodeProcess(pi.hProcess, &exit_code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+
+    // exit_code 1 means it parsed args, initialized ONNX Runtime session, failed to open wave file, and exited.
+    // That means CUDA works! DLL loader errors are usually large values like 0xC0000135.
+    if (exit_code == 1) {
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static BOOL detect_and_test_cuda(AppState *app, const wchar_t *sherpa_exe, const wchar_t *correct_root) {
+    wchar_t test_model[MAX_PATH] = {0};
+    wchar_t test_tokens[MAX_PATH] = {0};
+
+    // 1. Try Paraformer
+    swprintf(test_model, _countof(test_model), L"%ls\\third_party\\sherpa\\models\\paraformer-zh\\model.int8.onnx", correct_root);
+    swprintf(test_tokens, _countof(test_tokens), L"%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt", correct_root);
+    if (file_exists_non_dir(test_model) && file_exists_non_dir(test_tokens)) {
+        return check_cuda_support(sherpa_exe, test_model, test_tokens);
+    }
+
+    // 2. Try Zipformer
+    swprintf(test_model, _countof(test_model), L"%ls\\third_party\\sherpa\\models\\zipformer-zh\\encoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx", correct_root);
+    swprintf(test_tokens, _countof(test_tokens), L"%ls\\third_party\\sherpa\\models\\zipformer-zh\\tokens.txt", correct_root);
+    if (file_exists_non_dir(test_model) && file_exists_non_dir(test_tokens)) {
+        return check_cuda_support(sherpa_exe, test_model, test_tokens);
+    }
+
+    // 3. Try FunASR
+    swprintf(test_model, _countof(test_model), L"%ls\\third_party\\sherpa\\models\\funasr\\encoder_adaptor.int8.onnx", correct_root);
+    swprintf(test_tokens, _countof(test_tokens), L"%ls\\third_party\\sherpa\\models\\funasr\\tokens.txt", correct_root);
+    if (file_exists_non_dir(test_model) && file_exists_non_dir(test_tokens)) {
+        return check_cuda_support(sherpa_exe, test_model, test_tokens);
+    }
+
+    // If no model exists yet, we assume it's true until we have models to test
+    return TRUE;
+}
+
 static void try_auto_fill_sherpa_defaults(AppState *app) {
     wchar_t exe_path[MAX_PATH];
     wchar_t app_dir[MAX_PATH];
@@ -1194,7 +1267,16 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
 
         if (file_exists_non_dir(exe_path_cuda)) {
             wcsncpy_s(exe_path, _countof(exe_path), exe_path_cuda, _TRUNCATE);
-            is_cuda = TRUE;
+            if (app->use_gpu && check_cuda_support(exe_path_cuda, model_path, tokens_path)) {
+                is_cuda = TRUE;
+            } else {
+                is_cuda = FALSE;
+                if (app->use_gpu) {
+                    app_log_line(app, "NVIDIA GPU/CUDA build found but CUDA initialization failed (missing DLLs or driver error). Automatically falling back to CPU mode.");
+                } else {
+                    app_log_line(app, "NVIDIA GPU/CUDA build found but GPU acceleration is disabled by user. Falling back to CPU mode.");
+                }
+            }
         } else if (!file_exists_non_dir(exe_path)) {
             continue;
         }
@@ -1387,6 +1469,10 @@ static void sync_runtime_settings_to_ui(AppState *app) {
         set_checked(app->sherpa_daemon_check, app->sherpa_daemon_mode);
     }
 
+    if (app->sherpa_gpu_check) {
+        set_checked(app->sherpa_gpu_check, app->use_gpu);
+    }
+
     if (app->threads_edit) {
         int threads = extract_num_threads(app->sherpa_args);
         write_dword_to_edit(app->threads_edit, (DWORD)threads);
@@ -1432,6 +1518,7 @@ static BOOL apply_runtime_settings_from_ui(AppState *app, BOOL persist) {
     app->auto_stop_enabled = app->auto_stop_check ? is_checked(app->auto_stop_check) : TRUE;
     app->translate_enabled = app->translate_check ? is_checked(app->translate_check) : FALSE;
     app->sherpa_daemon_mode = app->sherpa_daemon_check ? is_checked(app->sherpa_daemon_check) : TRUE;
+    app->use_gpu = app->sherpa_gpu_check ? is_checked(app->sherpa_gpu_check) : TRUE;
 
     if (app->model_combo) {
         LRESULT sel = SendMessageW(app->model_combo, CB_GETCURSEL, 0, 0);
@@ -1755,7 +1842,16 @@ static void apply_model_selection(AppState *app, int sel) {
     BOOL is_cuda = FALSE;
     swprintf(sherpa_exe, _countof(sherpa_exe), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-cuda\\bin\\sherpa-onnx-offline.exe", correct_root);
     if (file_exists_non_dir(sherpa_exe)) {
-        is_cuda = TRUE;
+        if (app->use_gpu && detect_and_test_cuda(app, sherpa_exe, correct_root)) {
+            is_cuda = TRUE;
+        } else {
+            is_cuda = FALSE;
+            if (app->use_gpu) {
+                app_log_line(app, "NVIDIA GPU/CUDA build found but CUDA initialization failed (missing DLLs or driver error). Automatically falling back to CPU mode.");
+            } else {
+                app_log_line(app, "NVIDIA GPU/CUDA build found but GPU acceleration is disabled by user. Falling back to CPU mode.");
+            }
+        }
     } else {
         swprintf(sherpa_exe, _countof(sherpa_exe), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-static-MT-Release-no-tts\\bin\\sherpa-onnx-offline.exe", correct_root);
     }
@@ -1983,7 +2079,8 @@ static void save_settings(AppState *app) {
              L"mic_device_id=%u\r\n"
              L"mic_device_name=%ls\r\n"
              L"local_model_index=%d\r\n"
-             L"sherpa_daemon=%u\r\n",
+             L"sherpa_daemon=%u\r\n"
+             L"sherpa_use_gpu=%u\r\n",
              key_text,
              (unsigned)mods,
              app->sherpa_exe,
@@ -1999,7 +2096,8 @@ static void save_settings(AppState *app) {
              app->mic_device_id,
              app->mic_device_name,
              app->local_model_index,
-             app->sherpa_daemon_mode ? 1u : 0u);
+             app->sherpa_daemon_mode ? 1u : 0u,
+             app->use_gpu ? 1u : 0u);
 
     file_handle = CreateFileW(app->config_path,
                               GENERIC_WRITE,
@@ -2089,6 +2187,11 @@ static void load_settings(AppState *app) {
     app->translate_enabled = FALSE;
     app->local_model_index = _wtoi(local_model_text);
     app->sherpa_daemon_mode = wcstoul(sherpa_daemon_text, NULL, 10) ? TRUE : FALSE;
+    {
+        wchar_t sherpa_gpu_text[16] = L"1";
+        GetPrivateProfileStringW(L"settings", L"sherpa_use_gpu", L"1", sherpa_gpu_text, _countof(sherpa_gpu_text), app->config_path);
+        app->use_gpu = wcstoul(sherpa_gpu_text, NULL, 10) ? TRUE : FALSE;
+    }
     app->mic_device_id = (UINT)wcstoul(mic_dev_text, NULL, 10);
     app->recorder_config.device_id = app->mic_device_id;
     wcsncpy_s(app->replace_rules, _countof(app->replace_rules), replace_rules_text, _TRUNCATE);
@@ -2992,6 +3095,12 @@ static void create_main_controls(AppState *app) {
                                         (HMENU)(INT_PTR)IDC_EDIT_THREADS, app->instance, NULL);
     apply_font(app->threads_edit, font);
 
+    app->sherpa_gpu_check = CreateWindowW(L"BUTTON", L"GPU (CUDA) 加速",
+                                          WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                          330, 250, 160, 20, app->main_hwnd,
+                                          (HMENU)(INT_PTR)IDC_CHECK_SHERPA_GPU, app->instance, NULL);
+    apply_font(app->sherpa_gpu_check, font);
+
     app->check_ctrl = CreateWindowW(L"BUTTON", L"Ctrl", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                                     20, 250, 70, 20, app->main_hwnd,
                                     (HMENU)(INT_PTR)IDC_CHECK_CTRL, app->instance, NULL);
@@ -3221,6 +3330,14 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             if (HIWORD(wParam) == BN_CLICKED) {
                 app->continuous_mode = is_checked(app->continuous_check);
                 app_log_line(app, "continuous_mode toggled to %d", app->continuous_mode);
+                save_settings(app);
+            }
+            return 0;
+        case IDC_CHECK_SHERPA_GPU:
+            if (HIWORD(wParam) == BN_CLICKED) {
+                app->use_gpu = is_checked(app->sherpa_gpu_check);
+                app_log_line(app, "use_gpu toggled to %d", app->use_gpu);
+                apply_model_selection(app, app->local_model_index);
                 save_settings(app);
             }
             return 0;

@@ -13,12 +13,56 @@ set "SHERPA_ROOT=%ROOT_DIR%\third_party\sherpa"
 if not exist "%SHERPA_ROOT%" mkdir "%SHERPA_ROOT%"
 set "HAS_GPU=0"
 nvidia-smi >nul 2>&1
-if !ERRORLEVEL! equ 0 set "HAS_GPU=1"
+if !ERRORLEVEL! equ 0 (
+    if not "%CUDA_PATH%"=="" (
+        set "HAS_GPU=1"
+    ) else (
+        echo ===================================================================
+        echo NVIDIA GPU detected, but CUDA Toolkit is missing (CUDA_PATH is empty).
+        echo.
+        echo To run Sherpa-ONNX with full GPU acceleration, CUDA Toolkit is required.
+        echo.
+        set /p "INSTALL_CUDA=Do you want to automatically download and install CUDA Toolkit 12.6? (Y/N, default Y): "
+        if "!INSTALL_CUDA!"=="" set "INSTALL_CUDA=Y"
+        if /i "!INSTALL_CUDA!"=="Y" (
+            echo Downloading CUDA 12.6.0 Network Installer (approx. 31MB)...
+            curl -L -o "%SHERPA_ROOT%\cuda_installer.exe" "https://developer.download.nvidia.com/compute/cuda/12.6.0/network_installers/cuda_12.6.0_windows_network.exe"
+            if !ERRORLEVEL! equ 0 (
+                echo Installing CUDA Toolkit 12.6.0 silently...
+                echo Please approve the UAC (Administrator) prompt if it appears.
+                powershell -Command "Start-Process -FilePath '%SHERPA_ROOT%\cuda_installer.exe' -ArgumentList '-s' -Wait -Verb RunAs"
+                echo CUDA Toolkit installation finished!
+                del "%SHERPA_ROOT%\cuda_installer.exe" >nul 2>&1
+                
+                :: Refresh environment variables for the current batch session so CUDA_PATH is recognized
+                for /f "tokens=2*" %%A in ('reg query "HKLM\System\CurrentControlSet\Control\Session Manager\Environment" /v CUDA_PATH 2^>nul') do set "CUDA_PATH=%%B"
+                if not "!CUDA_PATH!"=="" (
+                    set "HAS_GPU=1"
+                    echo CUDA Environment successfully refreshed: !CUDA_PATH!
+                ) else (
+                    :: Fallback check
+                    if exist "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA" (
+                        set "HAS_GPU=1"
+                    ) else (
+                        echo CUDA_PATH not detected in registry. We will assume GPU is ready, please restart application after install.
+                        set "HAS_GPU=1"
+                    )
+                )
+            ) else (
+                echo Failed to download CUDA Toolkit.
+            )
+        )
+        if !HAS_GPU! equ 0 (
+            echo Defaulting to stable and high performance CPU runtime.
+        )
+        echo ===================================================================
+    )
+)
 if !HAS_GPU! equ 1 (
-    echo NVIDIA GPU detected. Using CUDA runtime.
+    echo NVIDIA GPU and CUDA Toolkit detected. Using CUDA runtime.
     set "RUNTIME_NAME=sherpa-onnx-%TAG%-win-x64-cuda"
 ) else (
-    echo No NVIDIA GPU detected. Using CPU runtime.
+    echo Using CPU runtime (stable and high performance).
     set "RUNTIME_NAME=sherpa-onnx-%TAG%-win-x64-static-MT-Release-no-tts"
 )
 set "ARCHIVE_NAME=%RUNTIME_NAME%.tar.bz2"
