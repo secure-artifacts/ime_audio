@@ -1262,8 +1262,16 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
         swprintf(exe_path_cuda, _countof(exe_path_cuda), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-cuda\\bin\\sherpa-onnx-offline.exe", roots[i]);
         swprintf(exe_path, _countof(exe_path), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-static-MT-Release-no-tts\\bin\\sherpa-onnx-offline.exe", roots[i]);
         
-        swprintf(tokens_path, _countof(tokens_path), L"%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt", roots[i]);
-        swprintf(model_path, _countof(model_path), L"%ls\\third_party\\sherpa\\models\\paraformer-zh\\model.int8.onnx", roots[i]);
+        if (app->local_model_index == 0) {
+            swprintf(tokens_path, _countof(tokens_path), L"%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt", roots[i]);
+            swprintf(model_path, _countof(model_path), L"%ls\\third_party\\sherpa\\models\\paraformer-zh\\model.int8.onnx", roots[i]);
+        } else if (app->local_model_index == 1) {
+            swprintf(tokens_path, _countof(tokens_path), L"%ls\\third_party\\sherpa\\models\\zipformer-zh\\tokens.txt", roots[i]);
+            swprintf(model_path, _countof(model_path), L"%ls\\third_party\\sherpa\\models\\zipformer-zh\\encoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx", roots[i]);
+        } else if (app->local_model_index == 2) {
+            swprintf(tokens_path, _countof(tokens_path), L"%ls\\third_party\\sherpa\\models\\funasr\\tokens.txt", roots[i]);
+            swprintf(model_path, _countof(model_path), L"%ls\\third_party\\sherpa\\models\\funasr\\encoder_adaptor.int8.onnx", roots[i]);
+        }
 
         if (file_exists_non_dir(exe_path_cuda)) {
             wcsncpy_s(exe_path, _countof(exe_path), exe_path_cuda, _TRUNCATE);
@@ -1286,10 +1294,18 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
         }
 
         wcsncpy_s(app->sherpa_exe, _countof(app->sherpa_exe), exe_path, _TRUNCATE);
+        
+        wchar_t cuda_prefix[32] = L"";
         if (is_cuda) {
-            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--provider=cuda --paraformer=\"..\\..\\models\\paraformer-zh\\model.int8.onnx\" --tokens=\"..\\..\\models\\paraformer-zh\\tokens.txt\" --num-threads=4 --decoding-method=greedy_search");
-        } else {
-            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"--paraformer=\"..\\..\\models\\paraformer-zh\\model.int8.onnx\" --tokens=\"..\\..\\models\\paraformer-zh\\tokens.txt\" --num-threads=4 --decoding-method=greedy_search");
+            wcscpy_s(cuda_prefix, _countof(cuda_prefix), L"--provider=cuda ");
+        }
+
+        if (app->local_model_index == 0) {
+            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--paraformer=\"..\\..\\models\\paraformer-zh\\model.int8.onnx\" --tokens=\"..\\..\\models\\paraformer-zh\\tokens.txt\" --num-threads=4 --decoding-method=greedy_search", cuda_prefix);
+        } else if (app->local_model_index == 1) {
+            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--encoder=\"..\\..\\models\\zipformer-zh\\encoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx\" --decoder=\"..\\..\\models\\zipformer-zh\\decoder-epoch-20-avg-1-chunk-16-left-128.onnx\" --joiner=\"..\\..\\models\\zipformer-zh\\joiner-epoch-20-avg-1-chunk-16-left-128.int8.onnx\" --tokens=\"..\\..\\models\\zipformer-zh\\tokens.txt\" --num-threads=4 --decoding-method=greedy_search", cuda_prefix);
+        } else if (app->local_model_index == 2) {
+            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--funasr-nano-encoder-adaptor=\"..\\..\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"..\\..\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"..\\..\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"..\\..\\models\\funasr\\Qwen3-0.6B\" --tokens=\"..\\..\\models\\funasr\\tokens.txt\"", cuda_prefix);
         }
 
         app_log_line(app, "auto-filled sherpa defaults from local third_party folder");
@@ -1981,10 +1997,10 @@ static BOOL launch_sherpa_installer(AppState *app) {
         extract_parent_dir(parent_dir, grandparent_dir, _countof(grandparent_dir));
     }
 
-    swprintf(script_path, _countof(script_path), L"%ls\\scripts\\install_sherpa.bat", app_dir);
+    swprintf(script_path, _countof(script_path), L"%ls\\scripts\\install_model.bat", app_dir);
     if (!file_exists_non_dir(script_path)) {
         if (parent_dir[0] != L'\0') {
-            swprintf(candidate, _countof(candidate), L"%ls\\scripts\\install_sherpa.bat", parent_dir);
+            swprintf(candidate, _countof(candidate), L"%ls\\scripts\\install_model.bat", parent_dir);
             if (file_exists_non_dir(candidate)) {
                 wcsncpy_s(script_path, _countof(script_path), candidate, _TRUNCATE);
             }
@@ -1993,7 +2009,7 @@ static BOOL launch_sherpa_installer(AppState *app) {
 
     if (!file_exists_non_dir(script_path)) {
         if (grandparent_dir[0] != L'\0') {
-            swprintf(candidate, _countof(candidate), L"%ls\\scripts\\install_sherpa.bat", grandparent_dir);
+            swprintf(candidate, _countof(candidate), L"%ls\\scripts\\install_model.bat", grandparent_dir);
             if (file_exists_non_dir(candidate)) {
                 wcsncpy_s(script_path, _countof(script_path), candidate, _TRUNCATE);
             }
@@ -2001,7 +2017,7 @@ static BOOL launch_sherpa_installer(AppState *app) {
     }
 
     if (!file_exists_non_dir(script_path)) {
-        set_status(app, L"未找到安装脚本 scripts\\install_sherpa.bat。");
+        set_status(app, L"未找到安装脚本 scripts\\install_model.bat。");
         return FALSE;
     }
 
@@ -2015,7 +2031,12 @@ static BOOL launch_sherpa_installer(AppState *app) {
         work_dir = app_dir;
     }
 
-    swprintf(params, _countof(params), L"/c \"%ls\"", script_path);
+    const wchar_t* model_id = L"funasr";
+    if (app->local_model_index == 0) model_id = L"paraformer";
+    if (app->local_model_index == 1) model_id = L"zipformer";
+    if (app->local_model_index == 2) model_id = L"funasr";
+
+    swprintf(params, _countof(params), L"/c \"%ls\" %ls", script_path, model_id);
 
     shell_result = ShellExecuteW(app->main_hwnd,
                                  L"open",
@@ -2133,7 +2154,7 @@ static void load_settings(AppState *app) {
     wchar_t replace_rules_text[2048] = L"";
     wchar_t continuous_mode_text[16] = L"0";
     wchar_t auto_stop_text[16] = L"1";
-    wchar_t local_model_text[16] = L"0";
+    wchar_t local_model_text[16] = L"2";
     wchar_t sherpa_daemon_text[16] = L"1";
     UINT mods = 0;
 
@@ -2163,7 +2184,7 @@ static void load_settings(AppState *app) {
     GetPrivateProfileStringW(L"settings", L"sherpa_exe", L"", app->sherpa_exe, _countof(app->sherpa_exe), app->config_path);
     GetPrivateProfileStringW(L"settings", L"sherpa_args", L"", app->sherpa_args, _countof(app->sherpa_args), app->config_path);
     GetPrivateProfileStringW(L"settings", L"replace_rules", L"", replace_rules_text, _countof(replace_rules_text), app->config_path);
-    GetPrivateProfileStringW(L"settings", L"local_model_index", L"0", local_model_text, _countof(local_model_text), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"local_model_index", L"2", local_model_text, _countof(local_model_text), app->config_path);
     GetPrivateProfileStringW(L"settings", L"sherpa_daemon", L"1", sherpa_daemon_text, _countof(sherpa_daemon_text), app->config_path);
 
     GetPrivateProfileStringW(L"settings", L"continuous_mode", L"0", continuous_mode_text, _countof(continuous_mode_text), app->config_path);
