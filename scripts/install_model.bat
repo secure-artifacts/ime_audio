@@ -140,28 +140,32 @@ if "%MODEL_ID%"=="funasr" (
 if "%MODEL_ID%"=="qwen3asr" (
     set "MODEL_DIR=%SHERPA_ROOT%\models\qwen3-asr"
     if not exist "!MODEL_DIR!" mkdir "!MODEL_DIR!"
-    echo Downloading Qwen3-ASR 0.6B INT8 model...
-    if not exist "%SHERPA_ROOT%\sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2" (
-        echo Downloading sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2 ...
-        curl -L -o "%SHERPA_ROOT%\sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2" "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2"
+    if not exist "!MODEL_DIR!\encoder.int8.onnx" (
+        echo Downloading Qwen3-ASR 0.6B INT8 model...
+        if not exist "%SHERPA_ROOT%\sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2" (
+            echo Downloading sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2 ...
+            curl -L -o "%SHERPA_ROOT%\sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2" "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2"
+            if !ERRORLEVEL! neq 0 (
+                echo [error] Failed to download Qwen3-ASR model.
+                pause
+                exit /b 1
+            )
+        )
+        echo Extracting Qwen3-ASR model ...
+        tar -xjf "%SHERPA_ROOT%\sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2" -C "%SHERPA_ROOT%"
         if !ERRORLEVEL! neq 0 (
-            echo [error] Failed to download Qwen3-ASR model.
+            echo [error] Failed to extract Qwen3-ASR model.
             pause
             exit /b 1
         )
+        if exist "%SHERPA_ROOT%\sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25" (
+            xcopy /s /e /y "%SHERPA_ROOT%\sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25\*" "!MODEL_DIR!"
+            rd /s /q "%SHERPA_ROOT%\sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25"
+        )
+        echo Qwen3-ASR model installed successfully.
+    ) else (
+        echo Qwen3-ASR model is already installed. Skipping download and extraction.
     )
-    echo Extracting Qwen3-ASR model ...
-    tar -xjf "%SHERPA_ROOT%\sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2" -C "%SHERPA_ROOT%"
-    if !ERRORLEVEL! neq 0 (
-        echo [error] Failed to extract Qwen3-ASR model.
-        pause
-        exit /b 1
-    )
-    if exist "%SHERPA_ROOT%\sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25" (
-        xcopy /s /e /y "%SHERPA_ROOT%\sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25\*" "!MODEL_DIR!"
-        rd /s /q "%SHERPA_ROOT%\sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25"
-    )
-    echo Qwen3-ASR model installed successfully.
 )
 
 echo.
