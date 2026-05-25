@@ -18,7 +18,7 @@ set "ROOT_DIR=%~dp0.."
 set "SHERPA_ROOT=%ROOT_DIR%\third_party\sherpa"
 if not exist "%SHERPA_ROOT%" mkdir "%SHERPA_ROOT%"
 
-set "TAG=v1.12.29"
+set "TAG=v1.13.2"
 set "HAS_GPU=0"
 nvidia-smi >nul 2>&1
 if !ERRORLEVEL! equ 0 (

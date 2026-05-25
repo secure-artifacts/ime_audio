@@ -1,5 +1,5 @@
 param(
-    [string]$Tag = "v1.12.29",
+    [string]$Tag = "v1.13.2",
     [switch]$ConfigureIni,
     [string]$IniPath = ""
 )

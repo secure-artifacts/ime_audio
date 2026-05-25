@@ -7,7 +7,7 @@ echo   Voice IME - Sherpa Onnx Offline Model Installer
 echo ===================================================
 echo.
 
-set "TAG=v1.12.29"
+set "TAG=v1.13.2"
 set "ROOT_DIR=%~dp0.."
 set "SHERPA_ROOT=%ROOT_DIR%\third_party\sherpa"
 if not exist "%SHERPA_ROOT%" mkdir "%SHERPA_ROOT%"

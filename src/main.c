@@ -1221,7 +1221,12 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
         return;
     }
 
-    if (app->sherpa_exe[0] != L'\0' && app->sherpa_args[0] != L'\0') {
+    if (app->sherpa_exe[0] != L'\0' && wcsstr(app->sherpa_exe, L"v1.12.29") != NULL) {
+        app->sherpa_exe[0] = L'\0';
+        app->sherpa_args[0] = L'\0';
+    }
+
+    if (app->sherpa_exe[0] != L'\0' && file_exists_non_dir(app->sherpa_exe) && app->sherpa_args[0] != L'\0') {
         return;
     }
 
@@ -1259,8 +1264,8 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
             continue;
         }
 
-        swprintf(exe_path_cuda, _countof(exe_path_cuda), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-cuda\\bin\\sherpa-onnx-offline.exe", roots[i]);
-        swprintf(exe_path, _countof(exe_path), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-static-MT-Release-no-tts\\bin\\sherpa-onnx-offline.exe", roots[i]);
+        swprintf(exe_path_cuda, _countof(exe_path_cuda), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.13.2-win-x64-cuda\\bin\\sherpa-onnx-offline.exe", roots[i]);
+        swprintf(exe_path, _countof(exe_path), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.13.2-win-x64-static-MT-Release-no-tts\\bin\\sherpa-onnx-offline.exe", roots[i]);
         
         if (app->local_model_index == 0) {
             swprintf(tokens_path, _countof(tokens_path), L"%ls\\third_party\\sherpa\\models\\paraformer-zh\\tokens.txt", roots[i]);
@@ -1272,7 +1277,7 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
             swprintf(tokens_path, _countof(tokens_path), L"%ls\\third_party\\sherpa\\models\\funasr\\tokens.txt", roots[i]);
             swprintf(model_path, _countof(model_path), L"%ls\\third_party\\sherpa\\models\\funasr\\encoder_adaptor.int8.onnx", roots[i]);
         } else if (app->local_model_index == 3) {
-            swprintf(tokens_path, _countof(tokens_path), L"%ls\\third_party\\sherpa\\models\\qwen3-asr\\tokens.txt", roots[i]);
+            swprintf(tokens_path, _countof(tokens_path), L"%ls\\third_party\\sherpa\\models\\qwen3-asr\\tokenizer\\vocab.json", roots[i]);
             swprintf(model_path, _countof(model_path), L"%ls\\third_party\\sherpa\\models\\qwen3-asr\\encoder.int8.onnx", roots[i]);
         }
 
@@ -1310,7 +1315,7 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
         } else if (app->local_model_index == 2) {
             swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--funasr-nano-encoder-adaptor=\"..\\..\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"..\\..\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"..\\..\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"..\\..\\models\\funasr\\Qwen3-0.6B\" --tokens=\"..\\..\\models\\funasr\\tokens.txt\"", cuda_prefix);
         } else if (app->local_model_index == 3) {
-            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--qwen3-asr-conv-frontend=\"..\\..\\models\\qwen3-asr\\conv_frontend.onnx\" --qwen3-asr-encoder=\"..\\..\\models\\qwen3-asr\\encoder.int8.onnx\" --qwen3-asr-decoder=\"..\\..\\models\\qwen3-asr\\decoder.int8.onnx\" --qwen3-asr-tokenizer=\"..\\..\\models\\qwen3-asr\\tokenizer\" --tokens=\"..\\..\\models\\qwen3-asr\\tokens.txt\"", cuda_prefix);
+            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--qwen3-asr-conv-frontend=\"..\\..\\models\\qwen3-asr\\conv_frontend.onnx\" --qwen3-asr-encoder=\"..\\..\\models\\qwen3-asr\\encoder.int8.onnx\" --qwen3-asr-decoder=\"..\\..\\models\\qwen3-asr\\decoder.int8.onnx\" --qwen3-asr-tokenizer=\"..\\..\\models\\qwen3-asr\\tokenizer\"", cuda_prefix);
         }
 
         app_log_line(app, "auto-filled sherpa defaults from local third_party folder");
@@ -1877,7 +1882,7 @@ static void apply_model_selection(AppState *app, int sel) {
     // Fill default arguments according to the selection using the correct root
     wchar_t sherpa_exe[2048];
     BOOL is_cuda = FALSE;
-    swprintf(sherpa_exe, _countof(sherpa_exe), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-cuda\\bin\\sherpa-onnx-offline.exe", correct_root);
+    swprintf(sherpa_exe, _countof(sherpa_exe), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.13.2-win-x64-cuda\\bin\\sherpa-onnx-offline.exe", correct_root);
     if (file_exists_non_dir(sherpa_exe)) {
         if (app->use_gpu && detect_and_test_cuda(app, sherpa_exe, correct_root)) {
             is_cuda = TRUE;
@@ -1890,7 +1895,7 @@ static void apply_model_selection(AppState *app, int sel) {
             }
         }
     } else {
-        swprintf(sherpa_exe, _countof(sherpa_exe), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.12.29-win-x64-static-MT-Release-no-tts\\bin\\sherpa-onnx-offline.exe", correct_root);
+        swprintf(sherpa_exe, _countof(sherpa_exe), L"%ls\\third_party\\sherpa\\sherpa-onnx-v1.13.2-win-x64-static-MT-Release-no-tts\\bin\\sherpa-onnx-offline.exe", correct_root);
     }
     
     wcsncpy_s(app->sherpa_exe, _countof(app->sherpa_exe), sherpa_exe, _TRUNCATE);
@@ -1907,7 +1912,7 @@ static void apply_model_selection(AppState *app, int sel) {
     } else if (sel == 2) {
         swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--funasr-nano-encoder-adaptor=\"..\\..\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"..\\..\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"..\\..\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"..\\..\\models\\funasr\\Qwen3-0.6B\" --tokens=\"..\\..\\models\\funasr\\tokens.txt\"", cuda_prefix);
     } else if (sel == 3) {
-        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--qwen3-asr-conv-frontend=\"..\\..\\models\\qwen3-asr\\conv_frontend.onnx\" --qwen3-asr-encoder=\"..\\..\\models\\qwen3-asr\\encoder.int8.onnx\" --qwen3-asr-decoder=\"..\\..\\models\\qwen3-asr\\decoder.int8.onnx\" --qwen3-asr-tokenizer=\"..\\..\\models\\qwen3-asr\\tokenizer\" --tokens=\"..\\..\\models\\qwen3-asr\\tokens.txt\"", cuda_prefix);
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--qwen3-asr-conv-frontend=\"..\\..\\models\\qwen3-asr\\conv_frontend.onnx\" --qwen3-asr-encoder=\"..\\..\\models\\qwen3-asr\\encoder.int8.onnx\" --qwen3-asr-decoder=\"..\\..\\models\\qwen3-asr\\decoder.int8.onnx\" --qwen3-asr-tokenizer=\"..\\..\\models\\qwen3-asr\\tokenizer\"", cuda_prefix);
     }
     
 
@@ -1993,7 +1998,7 @@ static BOOL launch_sherpa_installer(AppState *app) {
     try_auto_fill_sherpa_defaults(app);
     sync_runtime_settings_to_ui(app);
 
-    if (app->sherpa_exe[0] != L'\0' && app->sherpa_args[0] != L'\0') {
+    if (app->sherpa_exe[0] != L'\0' && file_exists_non_dir(app->sherpa_exe) && app->sherpa_args[0] != L'\0') {
         save_settings(app);
         run_self_check(app, FALSE);
         set_status(app, L"已自动应用本地 Sherpa 配置。");
