@@ -1742,12 +1742,13 @@ static BOOL build_self_check_report(AppState *app, wchar_t *report, size_t repor
         extract_parent_dir(app->sherpa_exe, sherpa_dir, _countof(sherpa_dir));
         has_paraformer = extract_option_value(app->sherpa_args, L"--paraformer=", tmp, _countof(tmp));
         BOOL has_funasr = extract_option_value(app->sherpa_args, L"--funasr-nano-llm=", tmp, _countof(tmp));
+        BOOL has_qwen3_asr = extract_option_value(app->sherpa_args, L"--qwen3-asr-encoder=", tmp, _countof(tmp));
         BOOL has_sense_voice = extract_option_value(app->sherpa_args, L"--sense-voice-model=", tmp, _countof(tmp));
         has_whisper_encoder = extract_option_value(app->sherpa_args, L"--whisper-encoder=", tmp, _countof(tmp));
         has_whisper_decoder = extract_option_value(app->sherpa_args, L"--whisper-decoder=", tmp, _countof(tmp));
 
         if (app->sherpa_args[0] != L'\0') {
-            if (!has_funasr) {
+            if (!has_funasr && !has_qwen3_asr) {
                 issues += validate_sherpa_path_option(app->sherpa_args, L"--tokens=", sherpa_dir, report, report_len);
             }
 
@@ -1757,6 +1758,10 @@ static BOOL build_self_check_report(AppState *app, wchar_t *report, size_t repor
                 issues += validate_sherpa_path_option(app->sherpa_args, L"--funasr-nano-encoder-adaptor=", sherpa_dir, report, report_len);
                 issues += validate_sherpa_path_option(app->sherpa_args, L"--funasr-nano-llm=", sherpa_dir, report, report_len);
                 issues += validate_sherpa_path_option(app->sherpa_args, L"--funasr-nano-embedding=", sherpa_dir, report, report_len);
+            } else if (has_qwen3_asr) {
+                issues += validate_sherpa_path_option(app->sherpa_args, L"--qwen3-asr-conv-frontend=", sherpa_dir, report, report_len);
+                issues += validate_sherpa_path_option(app->sherpa_args, L"--qwen3-asr-encoder=", sherpa_dir, report, report_len);
+                issues += validate_sherpa_path_option(app->sherpa_args, L"--qwen3-asr-decoder=", sherpa_dir, report, report_len);
             } else if (has_sense_voice) {
                 issues += validate_sherpa_path_option(app->sherpa_args, L"--sense-voice-model=", sherpa_dir, report, report_len);
             } else if (has_whisper_encoder || has_whisper_decoder) {
@@ -1854,6 +1859,16 @@ static void apply_model_selection(AppState *app, int sel) {
         swprintf(script_path, _countof(script_path), L"%ls\\scripts\\install_model.bat", correct_root);
     }
 
+    if (!file_exists_non_dir(script_path)) {
+        MessageBoxW(app->main_hwnd, 
+                    L"未找到安装脚本 scripts\\install_model.bat。\n请确保您下载并安装了完整的 Voice IME 版本，或重新运行安装包。", 
+                    L"错误", 
+                    MB_ICONERROR | MB_OK);
+        return;
+    }
+
+    app->local_model_index = sel;
+
     const wchar_t* model_id = L"paraformer";
     if (sel == 1) model_id = L"zipformer";
     if (sel == 2) model_id = L"funasr";
@@ -1948,7 +1963,7 @@ static void apply_model_selection(AppState *app, int sel) {
     SetWindowTextW(app->sherpa_args_edit, app->sherpa_args);
     save_settings(app);
 
-    swprintf(params, _countof(params), L"/c \"%ls\" %ls", script_path, model_id);
+    swprintf(params, _countof(params), L"/c \"\"%ls\" %ls\"", script_path, model_id);
     shell_result = ShellExecuteW(app->main_hwnd, L"open", L"cmd.exe", params, NULL, SW_SHOWNORMAL);
     
     if ((INT_PTR)shell_result <= 32) {
@@ -2045,7 +2060,7 @@ static BOOL launch_sherpa_installer(AppState *app) {
     if (app->local_model_index == 2) model_id = L"funasr";
     if (app->local_model_index == 3) model_id = L"qwen3asr";
 
-    swprintf(params, _countof(params), L"/c \"%ls\" %ls", script_path, model_id);
+    swprintf(params, _countof(params), L"/c \"\"%ls\" %ls\"", script_path, model_id);
 
     shell_result = ShellExecuteW(app->main_hwnd,
                                  L"open",
