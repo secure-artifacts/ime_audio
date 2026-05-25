@@ -158,7 +158,7 @@ if "%MODEL_ID%"=="qwen3asr" (
         exit /b 1
     )
     if exist "%SHERPA_ROOT%\sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25" (
-        xcopy /s /e /y "%SHERPA_ROOT%\sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25\*" "!MODEL_DIR!\"
+        xcopy /s /e /y "%SHERPA_ROOT%\sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25\*" "!MODEL_DIR!"
         rd /s /q "%SHERPA_ROOT%\sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25"
     )
     echo Qwen3-ASR model installed successfully.
