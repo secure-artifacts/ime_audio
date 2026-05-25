@@ -1271,6 +1271,9 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
         } else if (app->local_model_index == 2) {
             swprintf(tokens_path, _countof(tokens_path), L"%ls\\third_party\\sherpa\\models\\funasr\\tokens.txt", roots[i]);
             swprintf(model_path, _countof(model_path), L"%ls\\third_party\\sherpa\\models\\funasr\\encoder_adaptor.int8.onnx", roots[i]);
+        } else if (app->local_model_index == 3) {
+            swprintf(tokens_path, _countof(tokens_path), L"%ls\\third_party\\sherpa\\models\\qwen3-asr\\tokens.txt", roots[i]);
+            swprintf(model_path, _countof(model_path), L"%ls\\third_party\\sherpa\\models\\qwen3-asr\\encoder.int8.onnx", roots[i]);
         }
 
         if (file_exists_non_dir(exe_path_cuda)) {
@@ -1306,6 +1309,8 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
             swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--encoder=\"..\\..\\models\\zipformer-zh\\encoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx\" --decoder=\"..\\..\\models\\zipformer-zh\\decoder-epoch-20-avg-1-chunk-16-left-128.onnx\" --joiner=\"..\\..\\models\\zipformer-zh\\joiner-epoch-20-avg-1-chunk-16-left-128.int8.onnx\" --tokens=\"..\\..\\models\\zipformer-zh\\tokens.txt\" --num-threads=4 --decoding-method=greedy_search", cuda_prefix);
         } else if (app->local_model_index == 2) {
             swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--funasr-nano-encoder-adaptor=\"..\\..\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"..\\..\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"..\\..\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"..\\..\\models\\funasr\\Qwen3-0.6B\" --tokens=\"..\\..\\models\\funasr\\tokens.txt\"", cuda_prefix);
+        } else if (app->local_model_index == 3) {
+            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--qwen3-asr-conv-frontend=\"..\\..\\models\\qwen3-asr\\conv_frontend.onnx\" --qwen3-asr-encoder=\"..\\..\\models\\qwen3-asr\\encoder.int8.onnx\" --qwen3-asr-decoder=\"..\\..\\models\\qwen3-asr\\decoder.int8.onnx\" --qwen3-asr-tokenizer=\"..\\..\\models\\qwen3-asr\\tokenizer\" --tokens=\"..\\..\\models\\qwen3-asr\\tokens.txt\"", cuda_prefix);
         }
 
         app_log_line(app, "auto-filled sherpa defaults from local third_party folder");
@@ -1852,6 +1857,7 @@ static void apply_model_selection(AppState *app, int sel) {
     const wchar_t* model_id = L"paraformer";
     if (sel == 1) model_id = L"zipformer";
     if (sel == 2) model_id = L"funasr";
+    if (sel == 3) model_id = L"qwen3asr";
 
     // Fill default arguments according to the selection using the correct root
     wchar_t sherpa_exe[2048];
@@ -1885,6 +1891,8 @@ static void apply_model_selection(AppState *app, int sel) {
         swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--encoder=\"..\\..\\models\\zipformer-zh\\encoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx\" --decoder=\"..\\..\\models\\zipformer-zh\\decoder-epoch-20-avg-1-chunk-16-left-128.onnx\" --joiner=\"..\\..\\models\\zipformer-zh\\joiner-epoch-20-avg-1-chunk-16-left-128.int8.onnx\" --tokens=\"..\\..\\models\\zipformer-zh\\tokens.txt\" --num-threads=4 --decoding-method=greedy_search", cuda_prefix);
     } else if (sel == 2) {
         swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--funasr-nano-encoder-adaptor=\"..\\..\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"..\\..\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"..\\..\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"..\\..\\models\\funasr\\Qwen3-0.6B\" --tokens=\"..\\..\\models\\funasr\\tokens.txt\"", cuda_prefix);
+    } else if (sel == 3) {
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--qwen3-asr-conv-frontend=\"..\\..\\models\\qwen3-asr\\conv_frontend.onnx\" --qwen3-asr-encoder=\"..\\..\\models\\qwen3-asr\\encoder.int8.onnx\" --qwen3-asr-decoder=\"..\\..\\models\\qwen3-asr\\decoder.int8.onnx\" --qwen3-asr-tokenizer=\"..\\..\\models\\qwen3-asr\\tokenizer\" --tokens=\"..\\..\\models\\qwen3-asr\\tokens.txt\"", cuda_prefix);
     }
     
 
@@ -2035,6 +2043,7 @@ static BOOL launch_sherpa_installer(AppState *app) {
     if (app->local_model_index == 0) model_id = L"paraformer";
     if (app->local_model_index == 1) model_id = L"zipformer";
     if (app->local_model_index == 2) model_id = L"funasr";
+    if (app->local_model_index == 3) model_id = L"qwen3asr";
 
     swprintf(params, _countof(params), L"/c \"%ls\" %ls", script_path, model_id);
 
@@ -2981,6 +2990,7 @@ static void create_main_controls(AppState *app) {
     SendMessageW(app->model_combo, CB_ADDSTRING, 0, (LPARAM)L"默认模型 (Paraformer)");
     SendMessageW(app->model_combo, CB_ADDSTRING, 0, (LPARAM)L"Zipformer-multi-zh-hans (Transducer)");
     SendMessageW(app->model_combo, CB_ADDSTRING, 0, (LPARAM)L"FunASR-nano (2025)");
+    SendMessageW(app->model_combo, CB_ADDSTRING, 0, (LPARAM)L"Qwen3-ASR-0.6B (大语言声学模型)");
     SendMessageW(app->model_combo, CB_SETCURSEL, 0, 0);
 
     HWND btn_apply_model = CreateWindowW(L"BUTTON", L"下载并配置", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
