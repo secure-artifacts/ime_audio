@@ -2,6 +2,13 @@
 
 这是一个可后台运行的 Windows 全局语音输入工具，旨在提供极速、高准确率、无缝衔接的桌面语音转文字体验。支持云端（Groq / Gemini / Gladia）与本地（Sherpa-onnx）多种识别后端。
 
+> [!NOTE]
+> **v1.0.40 更新亮点**：
+> 1. 新增 **SenseVoice-Small** 本地多语言声学模型一键安装与离线识别支持。
+> 2. 新增 **本地/自订 AI 引擎 (OpenAI 兼容)** 接口路由与 API URL 配置。
+> 3. 支持全新的**提示词模板文件目录 (`prompts/`)**，方便深度自定义 AI 润色与转写规则。
+> 4. 音频录制 API 回退到更兼容的 `waveIn`，极大提升了旧设备与非标准麦克风的兼容稳定性。
+
 ## 🌟 核心特性
 
 - **全局热键与悬浮窗**：在任意应用输入框中，通过全局热键随时唤起录音；悬浮按钮智能跟随当前光标（或前台窗口）。
@@ -9,10 +16,12 @@
   - **Gemini Native Audio (首选)**：利用 Google Gemini 多模态能力，将语音直接交由大模型处理，**一步到位**实现语音转写、润色与翻译，延迟极低。
   - **Groq API**：利用 Groq 极速 API 驱动的 Whisper 模型，实现毫秒级超快识别。
   - **Gladia API**：支持 Gladia 高效的云端语音转文字服务。
-  - **Sherpa-onnx (本地)**：完全离线运行，保护隐私，无网络延迟。支持一键自动化安装本地环境与模型。
+  - **Sherpa-onnx (本地)**：完全离线运行，保护隐私，无网络延迟。支持一键自动化安装本地环境与模型（包含 **SenseVoice-Small**、Paraformer、Zipformer 和 FunASR）。
 - **AI 智能润色与多语种翻译**：
   - 内置 Gemini 文本处理器。无论使用哪种底层语音识别，皆可将文本结果二次送入 Gemini 进行润色、排版、去除语气词或**多语种翻译**。
+  - 支持本地/自定义 OpenAI 兼容模型作为替代 AI 润色引擎。
   - 支持自定义 System Prompt 和 Gemini 3.1 思考模式配置（Thinking Level）。
+  - 支持全局提示词模版文件自定义（详见进阶说明）。
 - **智能 VAD 与防幻觉 (Anti-Hallucination)**：
   - 增强的底层 VAD（语音活动检测）：自动过滤键盘敲击、鼠标点击等极短孤立底噪，只在真人连续说话时触发录音。
   - 防乱出字：结合特定的 Prompt 防幻觉指令，彻底解决由于底噪引发的大模型“幻觉（如乱出字幕词、无意义乱码）”。
@@ -72,6 +81,14 @@ cmake --build build --config Release
   - `最短录音 (min_record_ms)`：默认 900ms。低于此时长的纯噪音将被直接丢弃。
   - `最长录音 (max_record_ms)`：默认 30000ms。到达后强制结束当前段落的录制并发送识别。
 - **术语纠错格式**：`旧词=新词;词语A=词语B;` （注意使用分号结尾，支持全/半角分号）。
+
+### 🎨 提示词模版与优化风格自定义
+在程序运行目录的 `prompts/` 文件夹下，您可以直接编辑以下提示词文本文件来深度定制 AI 的行为：
+- `system_prompt_openai.txt`：使用本地/自订 OpenAI 兼容引擎时的基础系统提示词。
+- `prompt_openai_fewshot.txt`：OpenAI 兼容引擎的 Few-Shot (少样本) 对话示例，用于规范优化格式。
+- `system_prompt_gemini.txt`：Gemini 进行二次润色与翻译时的系统提示词。
+- `system_prompt_gemini_transcribe.txt`：Gemini Native Audio 语音直输时的核心系统提示词。
+- `prompt_style_default.txt` / `prompt_style_business.txt` / `prompt_style_casual.txt` / `prompt_style_concise.txt`：对应界面上“智慧預設/商務正式/日常口語/簡潔扼要”四种优化风格的提示词子模板。
 
 ## 📝 日志与排错
 

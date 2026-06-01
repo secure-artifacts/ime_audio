@@ -168,6 +168,23 @@ if "%MODEL_ID%"=="qwen3asr" (
     )
 )
 
+if "%MODEL_ID%"=="sensevoice" (
+    set "MODEL_DIR=%SHERPA_ROOT%\models\sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17"
+    if not exist "!MODEL_DIR!" mkdir "!MODEL_DIR!"
+    set "SRC_DIR=C:\Users\newnew\Desktop\Gemini 输入法\sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17"
+    if exist "!SRC_DIR!\model.int8.onnx" (
+        echo Found local SenseVoice model copy on Desktop, copying to save download time...
+        if not exist "!MODEL_DIR!\model.int8.onnx" copy /y "!SRC_DIR!\model.int8.onnx" "!MODEL_DIR!\model.int8.onnx"
+        if not exist "!MODEL_DIR!\tokens.txt" copy /y "!SRC_DIR!\tokens.txt" "!MODEL_DIR!\tokens.txt"
+        echo SenseVoice model successfully copied.
+    ) else (
+        echo Downloading SenseVoice model from mirror...
+        if not exist "!MODEL_DIR!\model.int8.onnx" curl -L -o "!MODEL_DIR!\model.int8.onnx" "%HF_MIRROR%/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/resolve/main/model.int8.onnx"
+        if not exist "!MODEL_DIR!\tokens.txt" curl -L -o "!MODEL_DIR!\tokens.txt" "%HF_MIRROR%/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/resolve/main/tokens.txt"
+        echo SenseVoice model downloaded successfully.
+    )
+)
+
 echo.
 echo ===================================================
 echo   Installation Complete!

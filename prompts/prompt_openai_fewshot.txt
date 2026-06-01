@@ -1,0 +1,8 @@
+user: 那个今天天气呃挺好的吧
+assistant: 今天天气挺好的吧。
+user: 这个是结合 a i 自动纠错比那个更智能
+assistant: 这个是结合 AI 自动纠错，比那个更智能。
+user: 你是谁呀
+assistant: 你是谁呀。
+user: 不换嘛那你得当时说一下看看才知道
+assistant: 不换嘛，那你得当时说一下，看看才知道。

@@ -58,12 +58,18 @@
 #define IDC_EDIT_GEMINI_PROMPT 2031
 #define IDC_COMBO_THINKING 2032
 #define IDC_LIST_LOG 2033
+#define IDC_COMBO_STYLE 2035
+#define IDC_LABEL_ADAPTATION 2036
+#define IDC_BTN_TEST_CONN 2037
 #define IDC_COMBO_MODEL 2041
 #define IDC_BTN_APPLY_MODEL 2042
 #define IDC_BTN_OPEN_CONFIG 2043
 #define IDC_CHECK_SHERPA_DAEMON 2044
 #define IDC_EDIT_THREADS 2045
 #define IDC_CHECK_SHERPA_GPU 2046
+#define IDC_EDIT_GEMINI_URL 2047
+#define IDC_COMBO_AI_ENGINE 2048
+#define IDC_EDIT_GEMINI_VOCAB 2049
 
 #define IDC_FLOAT_TOGGLE 3001
 #define IDC_FLOAT_STATUS 3002
@@ -84,9 +90,12 @@ typedef struct AppState {
     HWND float_hwnd;
     HWND api_edit;
     HWND gemini_key_edit;
+    HWND gemini_url_edit;
     HWND project_id_edit;
     HWND gemini_model_combo;
     HWND gemini_prompt_edit;
+    HWND gemini_vocab_edit;
+    HWND ai_engine_combo;
     HWND thinking_combo;
     HWND model_combo;
     HWND gladia_key_edit;
@@ -98,6 +107,9 @@ typedef struct AppState {
     HWND backend_combo;
     HWND mic_combo;
     HWND lang_combo;
+    HWND style_combo;
+    HWND adaptation_label;
+    HWND btn_test_conn;
     HWND continuous_check;
     HWND auto_stop_check;
     HWND translate_check;
@@ -125,12 +137,17 @@ typedef struct AppState {
     wchar_t sherpa_args[4096];
     wchar_t replace_rules[2048];
     wchar_t gemini_key[256];
+    wchar_t gemini_url[1024];
+    int ai_engine_index;
     wchar_t project_id[256];
     wchar_t gemini_model[256];
     wchar_t gemini_prompt[1024];
+    wchar_t gemini_vocab[1024];
     wchar_t thinking_level[32];
     wchar_t gladia_key[256];
     wchar_t target_lang[64];
+    wchar_t gemini_style[64];
+    int history_usage_count;
 
     UINT hotkey_mods;
     UINT hotkey_vk;
@@ -170,16 +187,22 @@ typedef struct TranscribeTask {
     char *api_key;
     char *project_id;
     char *model_id;
+    char *api_url;
+    int ai_engine;
     HWND target_window;
     BOOL translate_enabled;
     char *custom_prompt;
+    char *ai_vocab;
     char *target_lang;
     char *thinking_level;
+    char *gemini_style;
+    char *replace_rules;
     BOOL sherpa_daemon_mode;
 } TranscribeTask;
 
 typedef struct TranscribeResult {
     BOOL success;
+    char *raw_text;
     char *text;
     char *error_text;
     HWND target_window;
@@ -1279,6 +1302,9 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
         } else if (app->local_model_index == 3) {
             swprintf(tokens_path, _countof(tokens_path), L"%ls\\third_party\\sherpa\\models\\qwen3-asr\\tokenizer\\vocab.json", roots[i]);
             swprintf(model_path, _countof(model_path), L"%ls\\third_party\\sherpa\\models\\qwen3-asr\\encoder.int8.onnx", roots[i]);
+        } else if (app->local_model_index == 4) {
+            swprintf(tokens_path, _countof(tokens_path), L"%ls\\third_party\\sherpa\\models\\sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17\\tokens.txt", roots[i]);
+            swprintf(model_path, _countof(model_path), L"%ls\\third_party\\sherpa\\models\\sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17\\model.int8.onnx", roots[i]);
         }
 
         if (file_exists_non_dir(exe_path_cuda)) {
@@ -1316,6 +1342,8 @@ static void try_auto_fill_sherpa_defaults(AppState *app) {
             swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--funasr-nano-encoder-adaptor=\"..\\..\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"..\\..\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"..\\..\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"..\\..\\models\\funasr\\Qwen3-0.6B\" --tokens=\"..\\..\\models\\funasr\\tokens.txt\"", cuda_prefix);
         } else if (app->local_model_index == 3) {
             swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--qwen3-asr-conv-frontend=\"..\\..\\models\\qwen3-asr\\conv_frontend.onnx\" --qwen3-asr-encoder=\"..\\..\\models\\qwen3-asr\\encoder.int8.onnx\" --qwen3-asr-decoder=\"..\\..\\models\\qwen3-asr\\decoder.int8.onnx\" --qwen3-asr-tokenizer=\"..\\..\\models\\qwen3-asr\\tokenizer\"", cuda_prefix);
+        } else if (app->local_model_index == 4) {
+            swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--sense-voice-model=\"..\\..\\models\\sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17\\model.int8.onnx\" --tokens=\"..\\..\\models\\sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17\\tokens.txt\" --num-threads=4", cuda_prefix);
         }
 
         app_log_line(app, "auto-filled sherpa defaults from local third_party folder");
@@ -1423,18 +1451,127 @@ static void ensure_sherpa_daemon_running(AppState *app) {
     }
 }
 
+static void update_adaptation_progress_ui(AppState *app) {
+    if (!app || !app->adaptation_label) return;
+
+    int progress = 0;
+    if (app->gemini_prompt[0] != L'\0') {
+        progress += 20;
+    }
+    if (app->replace_rules[0] != L'\0') {
+        progress += 20;
+    }
+    if (app->gemini_style[0] != L'\0' && wcscmp(app->gemini_style, L"智慧預設") != 0) {
+        progress += 20;
+    }
+    int usage_bonus = app->history_usage_count * 4;
+    if (usage_bonus > 40) usage_bonus = 40;
+    progress += usage_bonus;
+
+    wchar_t progress_text[64];
+    wchar_t bar[11] = L"..........";
+    int filled = progress / 10;
+    for (int i = 0; i < filled && i < 10; ++i) {
+        bar[i] = L'|';
+    }
+    swprintf(progress_text, _countof(progress_text), L"%d%% [%ls]", progress, bar);
+    SetWindowTextW(app->adaptation_label, progress_text);
+}
+
+static DWORD WINAPI test_conn_thread_proc(LPVOID param) {
+    AppState *app = (AppState *)param;
+    char *err_text = NULL;
+    char *out_text = NULL;
+    
+    wchar_t key[256];
+    wchar_t model[256];
+    wchar_t custom_url[1024] = L"";
+    int ai_engine = 0;
+    
+    GetWindowTextW(app->gemini_key_edit, key, _countof(key));
+    trim_wide_whitespace(key);
+    
+    GetWindowTextW(app->gemini_model_combo, model, _countof(model));
+    trim_wide_whitespace(model);
+    if (model[0] == L'\0') {
+        wcscpy_s(model, _countof(model), L"gemini-3.1-flash-lite");
+    }
+
+    if (app->gemini_url_edit) {
+        GetWindowTextW(app->gemini_url_edit, custom_url, _countof(custom_url));
+        trim_wide_whitespace(custom_url);
+    }
+
+    if (app->ai_engine_combo) {
+        LRESULT sel = SendMessageW(app->ai_engine_combo, CB_GETCURSEL, 0, 0);
+        if (sel != CB_ERR) {
+            ai_engine = (int)sel;
+        }
+    }
+
+    if (ai_engine == 0) {
+        if (key[0] == L'\0') {
+            MessageBoxW(app->main_hwnd, L"請先輸入 Gemini API Key！", L"測試連線", MB_OK | MB_ICONWARNING);
+            return 0;
+        }
+    } else if (ai_engine == 1) {
+        if (custom_url[0] == L'\0') {
+            MessageBoxW(app->main_hwnd, L"使用本地/自訂 AI 引擎時，請先輸入自訂 API URL！\n例如: http://127.0.0.1:1234", L"測試連線", MB_OK | MB_ICONWARNING);
+            return 0;
+        }
+    }
+
+    char *key_utf8 = wide_to_utf8_alloc(key);
+    char *model_utf8 = wide_to_utf8_alloc(model);
+    char *custom_url_utf8 = wide_to_utf8_alloc(custom_url);
+    char *lang_utf8 = wide_to_utf8_alloc(L"不翻譯");
+    char *style_utf8 = wide_to_utf8_alloc(L"智慧預設");
+    char *prompt_utf8 = wide_to_utf8_alloc(L"");
+    char *rules_utf8 = wide_to_utf8_alloc(L"");
+    
+    wchar_t vocab[1024] = L"";
+    if (app->gemini_vocab_edit) {
+        GetWindowTextW(app->gemini_vocab_edit, vocab, _countof(vocab));
+        trim_wide_whitespace(vocab);
+    }
+    char *vocab_utf8 = wide_to_utf8_alloc(vocab);
+
+    BOOL success = gemini_polish_text("Hello", key_utf8, model_utf8, custom_url_utf8, ai_engine, lang_utf8, style_utf8, prompt_utf8, rules_utf8, vocab_utf8, &out_text, &err_text);
+
+    free(key_utf8);
+    free(model_utf8);
+    free(custom_url_utf8);
+    free(lang_utf8);
+    free(style_utf8);
+    free(prompt_utf8);
+    free(rules_utf8);
+    free(vocab_utf8);
+
+    if (success) {
+        wchar_t success_msg[512];
+        swprintf(success_msg, _countof(success_msg), L"連線測試成功！\n模型回應: %S", out_text ? out_text : "");
+        MessageBoxW(app->main_hwnd, success_msg, L"測試連線", MB_OK | MB_ICONINFORMATION);
+    } else {
+        wchar_t error_msg[2048];
+        wchar_t *err_wide = utf8_to_wide_alloc(err_text ? err_text : "未知錯誤");
+        swprintf(error_msg, _countof(error_msg), L"連線測試失敗！\n錯誤訊息: %ls", err_wide ? err_wide : L"");
+        MessageBoxW(app->main_hwnd, error_msg, L"測試連線", MB_OK | MB_ICONERROR);
+        if (err_wide) free(err_wide);
+    }
+
+    if (out_text) free(out_text);
+    if (err_text) free(err_text);
+    return 0;
+}
+
 static void sync_runtime_settings_to_ui(AppState *app) {
     if (!app) {
         return;
     }
 
     if (app->backend_combo) {
-        if (app->backend == ASR_BACKEND_SHERPA) {
+        if (app->backend == ASR_BACKEND_GEMINI) {
             SendMessageW(app->backend_combo, CB_SETCURSEL, 1, 0);
-        } else if (app->backend == ASR_BACKEND_GLADIA) {
-            SendMessageW(app->backend_combo, CB_SETCURSEL, 2, 0);
-        } else if (app->backend == ASR_BACKEND_GEMINI) {
-            SendMessageW(app->backend_combo, CB_SETCURSEL, 3, 0);
         } else {
             SendMessageW(app->backend_combo, CB_SETCURSEL, 0, 0);
         }
@@ -1449,21 +1586,28 @@ static void sync_runtime_settings_to_ui(AppState *app) {
         }
     }
 
+    if (app->style_combo) {
+        LRESULT idx = SendMessageW(app->style_combo, CB_FINDSTRINGEXACT, -1, (LPARAM)app->gemini_style);
+        if (idx != CB_ERR) {
+            SendMessageW(app->style_combo, CB_SETCURSEL, idx, 0);
+            if (idx == 4) {
+                EnableWindow(app->gemini_prompt_edit, TRUE);
+            } else {
+                EnableWindow(app->gemini_prompt_edit, FALSE);
+            }
+        } else {
+            SendMessageW(app->style_combo, CB_SETCURSEL, 0, 0);
+            EnableWindow(app->gemini_prompt_edit, FALSE);
+        }
+    }
+
     if (app->gemini_model_combo) {
         LRESULT idx = SendMessageW(app->gemini_model_combo, CB_FINDSTRINGEXACT, -1, (LPARAM)app->gemini_model);
         if (idx != CB_ERR) {
             SendMessageW(app->gemini_model_combo, CB_SETCURSEL, idx, 0);
         } else {
-            SendMessageW(app->gemini_model_combo, CB_SETCURSEL, 0, 0);
-        }
-    }
-
-    if (app->thinking_combo) {
-        LRESULT idx = SendMessageW(app->thinking_combo, CB_FINDSTRINGEXACT, -1, (LPARAM)app->thinking_level);
-        if (idx != CB_ERR) {
-            SendMessageW(app->thinking_combo, CB_SETCURSEL, idx, 0);
-        } else {
-            SendMessageW(app->thinking_combo, CB_SETCURSEL, 1, 0); // Default to LOW
+            SendMessageW(app->gemini_model_combo, CB_SETCURSEL, -1, 0);
+            SetWindowTextW(app->gemini_model_combo, app->gemini_model);
         }
     }
 
@@ -1504,13 +1648,31 @@ static void sync_runtime_settings_to_ui(AppState *app) {
         write_dword_to_edit(app->threads_edit, (DWORD)threads);
     }
 
+    if (app->gemini_key_edit) {
+        SetWindowTextW(app->gemini_key_edit, app->gemini_key);
+    }
+
+    if (app->gemini_url_edit) {
+        SetWindowTextW(app->gemini_url_edit, app->gemini_url);
+    }
+
+    if (app->ai_engine_combo) {
+        SendMessageW(app->ai_engine_combo, CB_SETCURSEL, app->ai_engine_index, 0);
+    }
+
     if (app->gemini_prompt_edit) {
         SetWindowTextW(app->gemini_prompt_edit, app->gemini_prompt);
+    }
+
+    if (app->gemini_vocab_edit) {
+        SetWindowTextW(app->gemini_vocab_edit, app->gemini_vocab);
     }
 
     if (app->replace_rules_edit) {
         SetWindowTextW(app->replace_rules_edit, app->replace_rules);
     }
+
+    update_adaptation_progress_ui(app);
 
     write_dword_to_edit(app->threshold_edit, (DWORD)app->recorder_config.voice_threshold);
     write_dword_to_edit(app->silence_edit, app->recorder_config.silence_timeout_ms);
@@ -1521,6 +1683,7 @@ static void sync_runtime_settings_to_ui(AppState *app) {
 static BOOL apply_runtime_settings_from_ui(AppState *app, BOOL persist) {
     LRESULT selected_backend = 0;
     LRESULT selected_lang = 0;
+    LRESULT selected_style = 0;
     LRESULT selected_model = 0;
 
     if (!app) {
@@ -1530,13 +1693,9 @@ static BOOL apply_runtime_settings_from_ui(AppState *app, BOOL persist) {
     if (app->backend_combo) {
         selected_backend = SendMessageW(app->backend_combo, CB_GETCURSEL, 0, 0);
         if (selected_backend == 1) {
-            app->backend = ASR_BACKEND_SHERPA;
-        } else if (selected_backend == 2) {
-            app->backend = ASR_BACKEND_GLADIA;
-        } else if (selected_backend == 3) {
             app->backend = ASR_BACKEND_GEMINI;
         } else {
-            app->backend = ASR_BACKEND_GROQ;
+            app->backend = ASR_BACKEND_SHERPA;
         }
     }
 
@@ -1560,18 +1719,16 @@ static BOOL apply_runtime_settings_from_ui(AppState *app, BOOL persist) {
         }
     }
 
-    if (app->gemini_model_combo) {
-        selected_model = SendMessageW(app->gemini_model_combo, CB_GETCURSEL, 0, 0);
-        if (selected_model != CB_ERR) {
-            SendMessageW(app->gemini_model_combo, CB_GETLBTEXT, (WPARAM)selected_model, (LPARAM)app->gemini_model);
+    if (app->style_combo) {
+        selected_style = SendMessageW(app->style_combo, CB_GETCURSEL, 0, 0);
+        if (selected_style != CB_ERR) {
+            SendMessageW(app->style_combo, CB_GETLBTEXT, (WPARAM)selected_style, (LPARAM)app->gemini_style);
         }
     }
 
-    if (app->thinking_combo) {
-        LRESULT selected_thinking = SendMessageW(app->thinking_combo, CB_GETCURSEL, 0, 0);
-        if (selected_thinking != CB_ERR) {
-            SendMessageW(app->thinking_combo, CB_GETLBTEXT, (WPARAM)selected_thinking, (LPARAM)app->thinking_level);
-        }
+    if (app->gemini_model_combo) {
+        GetWindowTextW(app->gemini_model_combo, app->gemini_model, _countof(app->gemini_model));
+        trim_wide_whitespace(app->gemini_model);
     }
 
     if (app->gemini_key_edit) {
@@ -1579,19 +1736,26 @@ static BOOL apply_runtime_settings_from_ui(AppState *app, BOOL persist) {
         trim_wide_whitespace(app->gemini_key);
     }
     
-    if (app->project_id_edit) {
-        GetWindowTextW(app->project_id_edit, app->project_id, _countof(app->project_id));
-        trim_wide_whitespace(app->project_id);
+    if (app->gemini_url_edit) {
+        GetWindowTextW(app->gemini_url_edit, app->gemini_url, _countof(app->gemini_url));
+        trim_wide_whitespace(app->gemini_url);
     }
-    
-    if (app->gladia_key_edit) {
-        GetWindowTextW(app->gladia_key_edit, app->gladia_key, _countof(app->gladia_key));
-        trim_wide_whitespace(app->gladia_key);
+
+    if (app->ai_engine_combo) {
+        LRESULT sel = SendMessageW(app->ai_engine_combo, CB_GETCURSEL, 0, 0);
+        if (sel != CB_ERR) {
+            app->ai_engine_index = (int)sel;
+        }
     }
 
     if (app->gemini_prompt_edit) {
         GetWindowTextW(app->gemini_prompt_edit, app->gemini_prompt, _countof(app->gemini_prompt));
         trim_wide_whitespace(app->gemini_prompt);
+    }
+
+    if (app->gemini_vocab_edit) {
+        GetWindowTextW(app->gemini_vocab_edit, app->gemini_vocab, _countof(app->gemini_vocab));
+        trim_wide_whitespace(app->gemini_vocab);
     }
 
     if (app->sherpa_exe_edit) {
@@ -1878,6 +2042,7 @@ static void apply_model_selection(AppState *app, int sel) {
     if (sel == 1) model_id = L"zipformer";
     if (sel == 2) model_id = L"funasr";
     if (sel == 3) model_id = L"qwen3asr";
+    if (sel == 4) model_id = L"sensevoice";
 
     // Fill default arguments according to the selection using the correct root
     wchar_t sherpa_exe[2048];
@@ -1913,6 +2078,8 @@ static void apply_model_selection(AppState *app, int sel) {
         swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--funasr-nano-encoder-adaptor=\"..\\..\\models\\funasr\\encoder_adaptor.int8.onnx\" --funasr-nano-llm=\"..\\..\\models\\funasr\\llm.int8.onnx\" --funasr-nano-embedding=\"..\\..\\models\\funasr\\embedding.int8.onnx\" --funasr-nano-tokenizer=\"..\\..\\models\\funasr\\Qwen3-0.6B\" --tokens=\"..\\..\\models\\funasr\\tokens.txt\"", cuda_prefix);
     } else if (sel == 3) {
         swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--qwen3-asr-conv-frontend=\"..\\..\\models\\qwen3-asr\\conv_frontend.onnx\" --qwen3-asr-encoder=\"..\\..\\models\\qwen3-asr\\encoder.int8.onnx\" --qwen3-asr-decoder=\"..\\..\\models\\qwen3-asr\\decoder.int8.onnx\" --qwen3-asr-tokenizer=\"..\\..\\models\\qwen3-asr\\tokenizer\"", cuda_prefix);
+    } else if (sel == 4) {
+        swprintf(app->sherpa_args, _countof(app->sherpa_args), L"%ls--sense-voice-model=\"..\\..\\models\\sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17\\model.int8.onnx\" --tokens=\"..\\..\\models\\sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17\\tokens.txt\" --num-threads=4", cuda_prefix);
     }
     
 
@@ -2064,6 +2231,7 @@ static BOOL launch_sherpa_installer(AppState *app) {
     if (app->local_model_index == 1) model_id = L"zipformer";
     if (app->local_model_index == 2) model_id = L"funasr";
     if (app->local_model_index == 3) model_id = L"qwen3asr";
+    if (app->local_model_index == 4) model_id = L"sensevoice";
 
     swprintf(params, _countof(params), L"/c \"\"%ls\" %ls\"", script_path, model_id);
 
@@ -2105,6 +2273,25 @@ static void save_settings(AppState *app) {
     wcsncpy_s(app->replace_rules, _countof(app->replace_rules), replace_rules, _TRUNCATE);
     trim_wide_whitespace(app->replace_rules);
 
+    wchar_t gemini_url[1024];
+    gemini_url[0] = L'\0';
+    if (app->gemini_url_edit) {
+        GetWindowTextW(app->gemini_url_edit, gemini_url, _countof(gemini_url));
+    } else {
+        wcsncpy_s(gemini_url, _countof(gemini_url), app->gemini_url, _TRUNCATE);
+    }
+    wcsncpy_s(app->gemini_url, _countof(app->gemini_url), gemini_url, _TRUNCATE);
+    trim_wide_whitespace(app->gemini_url);
+
+    int ai_engine = 0;
+    if (app->ai_engine_combo) {
+        LRESULT sel = SendMessageW(app->ai_engine_combo, CB_GETCURSEL, 0, 0);
+        if (sel != CB_ERR) {
+            ai_engine = (int)sel;
+        }
+    }
+    app->ai_engine_index = ai_engine;
+
     mods = read_modifiers(app);
     if (mods == 0) {
         mods = app->hotkey_mods ? app->hotkey_mods : (MOD_CONTROL | MOD_ALT);
@@ -2115,7 +2302,7 @@ static void save_settings(AppState *app) {
              L"[settings]\r\n"
              L"hotkey_key=%ls\r\n"
              L"hotkey_mods=%u\r\n"
-             L"backend=sherpa\r\n"
+             L"backend=%ls\r\n"
              L"sherpa_exe=%ls\r\n"
              L"sherpa_args=%ls\r\n"
              L"replace_rules=%ls\r\n"
@@ -2130,9 +2317,20 @@ static void save_settings(AppState *app) {
              L"mic_device_name=%ls\r\n"
              L"local_model_index=%d\r\n"
              L"sherpa_daemon=%u\r\n"
-             L"sherpa_use_gpu=%u\r\n",
+             L"sherpa_use_gpu=%u\r\n"
+             L"gemini_key=%ls\r\n"
+             L"gemini_url=%ls\r\n"
+             L"ai_engine=%d\r\n"
+             L"gemini_model=%ls\r\n"
+             L"gemini_prompt=%ls\r\n"
+             L"gemini_vocab=%ls\r\n"
+             L"gemini_style=%ls\r\n"
+             L"target_lang=%ls\r\n"
+             L"translate_enabled=%u\r\n"
+             L"history_usage_count=%d\r\n",
              key_text,
              (unsigned)mods,
+             asr_backend_name(app->backend),
              app->sherpa_exe,
              app->sherpa_args,
              app->replace_rules,
@@ -2147,7 +2345,17 @@ static void save_settings(AppState *app) {
              app->mic_device_name,
              app->local_model_index,
              app->sherpa_daemon_mode ? 1u : 0u,
-             app->use_gpu ? 1u : 0u);
+             app->use_gpu ? 1u : 0u,
+             app->gemini_key,
+             app->gemini_url,
+             app->ai_engine_index,
+             app->gemini_model,
+             app->gemini_prompt,
+             app->gemini_vocab,
+             app->gemini_style,
+             app->target_lang,
+             app->translate_enabled ? 1u : 0u,
+             app->history_usage_count);
 
     file_handle = CreateFileW(app->config_path,
                               GENERIC_WRITE,
@@ -2205,6 +2413,8 @@ static void load_settings(AppState *app) {
     app->gemini_model[0] = L'\0';
     app->gladia_key[0] = L'\0';
     app->target_lang[0] = L'\0';
+    app->gemini_style[0] = L'\0';
+    app->history_usage_count = 0;
     set_default_recorder_config(app);
 
     GetPrivateProfileStringW(L"settings", L"hotkey_key", L"Q", key_text, _countof(key_text), app->config_path);
@@ -2231,10 +2441,31 @@ static void load_settings(AppState *app) {
         mods = MOD_CONTROL;
     }
 
-    app->backend = ASR_BACKEND_SHERPA;
+    app->backend = asr_parse_backend_name(backend_name);
     app->continuous_mode = wcstoul(continuous_mode_text, NULL, 10) ? TRUE : FALSE;
     app->auto_stop_enabled = wcstoul(auto_stop_text, NULL, 10) ? TRUE : FALSE;
-    app->translate_enabled = FALSE;
+    
+    wchar_t translate_enabled_text[16] = L"0";
+    GetPrivateProfileStringW(L"settings", L"translate_enabled", L"0", translate_enabled_text, _countof(translate_enabled_text), app->config_path);
+    app->translate_enabled = wcstoul(translate_enabled_text, NULL, 10) ? TRUE : FALSE;
+
+    GetPrivateProfileStringW(L"settings", L"gemini_key", L"", app->gemini_key, _countof(app->gemini_key), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"gemini_url", L"", app->gemini_url, _countof(app->gemini_url), app->config_path);
+    
+    wchar_t ai_engine_text[16] = L"0";
+    GetPrivateProfileStringW(L"settings", L"ai_engine", L"0", ai_engine_text, _countof(ai_engine_text), app->config_path);
+    app->ai_engine_index = _wtoi(ai_engine_text);
+
+    GetPrivateProfileStringW(L"settings", L"gemini_model", L"gemini-3.1-flash-lite", app->gemini_model, _countof(app->gemini_model), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"gemini_prompt", L"", app->gemini_prompt, _countof(app->gemini_prompt), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"gemini_vocab", L"", app->gemini_vocab, _countof(app->gemini_vocab), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"gemini_style", L"智慧預設", app->gemini_style, _countof(app->gemini_style), app->config_path);
+    GetPrivateProfileStringW(L"settings", L"target_lang", L"不翻譯", app->target_lang, _countof(app->target_lang), app->config_path);
+    
+    wchar_t usage_count_text[16] = L"0";
+    GetPrivateProfileStringW(L"settings", L"history_usage_count", L"0", usage_count_text, _countof(usage_count_text), app->config_path);
+    app->history_usage_count = (int)wcstoul(usage_count_text, NULL, 10);
+
     app->local_model_index = _wtoi(local_model_text);
     app->sherpa_daemon_mode = wcstoul(sherpa_daemon_text, NULL, 10) ? TRUE : FALSE;
     {
@@ -2494,7 +2725,19 @@ static DWORD WINAPI transcribe_thread_proc(LPVOID param) {
     result = (TranscribeResult *)calloc(1, sizeof(TranscribeResult));
     if (result) {
         result->target_window = task->target_window;
-        if (task->backend == ASR_BACKEND_SHERPA) {
+        if (task->backend == ASR_BACKEND_GEMINI) {
+            result->success = gemini_transcribe_audio(task->wav_path,
+                                                      task->api_key,
+                                                      task->model_id,
+                                                      task->api_url,
+                                                      task->target_lang,
+                                                      task->gemini_style,
+                                                      task->custom_prompt,
+                                                      task->replace_rules,
+                                                      task->ai_vocab,
+                                                      &result->text,
+                                                      &result->error_text);
+        } else if (task->backend == ASR_BACKEND_SHERPA) {
             if (task->sherpa_daemon_mode) {
                 result->success = sherpa_transcribe_wav_websocket(task->wav_path,
                                                                   &result->text,
@@ -2506,9 +2749,45 @@ static DWORD WINAPI transcribe_thread_proc(LPVOID param) {
                                                             &result->text,
                                                             &result->error_text);
             }
+
+            if (result->success && result->text && task->translate_enabled) {
+                result->raw_text = _strdup(result->text);
+                char *polished = NULL;
+                char *polish_err = NULL;
+                BOOL polish_ok = gemini_polish_text(result->text,
+                                                    task->api_key,
+                                                    task->model_id,
+                                                    task->api_url,
+                                                    task->ai_engine,
+                                                    task->target_lang,
+                                                    task->gemini_style,
+                                                    task->custom_prompt,
+                                                    task->replace_rules,
+                                                    task->ai_vocab,
+                                                    &polished,
+                                                    &polish_err);
+                if (polish_ok && polished) {
+                    free(result->text);
+                    result->text = polished;
+                } else {
+                    if (polish_err) {
+                        result->error_text = polish_err;
+                    } else {
+                        result->error_text = _strdup("Gemini 潤色失敗，已回退到原始轉寫文本。");
+                    }
+                }
+            }
         }
     }
 
+    if (task->api_key) free(task->api_key);
+    if (task->model_id) free(task->model_id);
+    if (task->api_url) free(task->api_url);
+    if (task->custom_prompt) free(task->custom_prompt);
+    if (task->ai_vocab) free(task->ai_vocab);
+    if (task->target_lang) free(task->target_lang);
+    if (task->gemini_style) free(task->gemini_style);
+    if (task->replace_rules) free(task->replace_rules);
     free(task);
 
     if (notify_hwnd) {
@@ -2516,6 +2795,9 @@ static DWORD WINAPI transcribe_thread_proc(LPVOID param) {
     } else if (result) {
         if (result->text) {
             free(result->text);
+        }
+        if (result->raw_text) {
+            free(result->raw_text);
         }
         if (result->error_text) {
             free(result->error_text);
@@ -2546,14 +2828,33 @@ static BOOL start_transcribing(AppState *app, HWND target_window) {
 
     task->notify_hwnd = app->main_hwnd;
     wcscpy_s(task->wav_path, _countof(task->wav_path), app->wav_path);
-    task->backend = ASR_BACKEND_SHERPA;
+    task->backend = app->backend;
     wcscpy_s(task->sherpa_exe, _countof(task->sherpa_exe), app->sherpa_exe);
     wcscpy_s(task->sherpa_args, _countof(task->sherpa_args), app->sherpa_args);
     task->target_window = target_window;
     task->sherpa_daemon_mode = app->sherpa_daemon_mode;
+    task->translate_enabled = app->translate_enabled;
+
+    if (app->gemini_key[0] != L'\0') task->api_key = wide_to_utf8_alloc(app->gemini_key);
+    if (app->gemini_model[0] != L'\0') task->model_id = wide_to_utf8_alloc(app->gemini_model);
+    if (app->gemini_url[0] != L'\0') task->api_url = wide_to_utf8_alloc(app->gemini_url);
+    task->ai_engine = app->ai_engine_index;
+    if (app->gemini_prompt[0] != L'\0') task->custom_prompt = wide_to_utf8_alloc(app->gemini_prompt);
+    if (app->gemini_vocab[0] != L'\0') task->ai_vocab = wide_to_utf8_alloc(app->gemini_vocab);
+    if (app->target_lang[0] != L'\0') task->target_lang = wide_to_utf8_alloc(app->target_lang);
+    if (app->gemini_style[0] != L'\0') task->gemini_style = wide_to_utf8_alloc(app->gemini_style);
+    if (app->replace_rules[0] != L'\0') task->replace_rules = wide_to_utf8_alloc(app->replace_rules);
 
     worker = CreateThread(NULL, 0, transcribe_thread_proc, task, 0, NULL);
     if (!worker) {
+        if (task->api_key) free(task->api_key);
+        if (task->model_id) free(task->model_id);
+        if (task->api_url) free(task->api_url);
+        if (task->custom_prompt) free(task->custom_prompt);
+        if (task->ai_vocab) free(task->ai_vocab);
+        if (task->target_lang) free(task->target_lang);
+        if (task->gemini_style) free(task->gemini_style);
+        if (task->replace_rules) free(task->replace_rules);
         free(task);
         set_status(app, L"启动识别线程失败。");
         return FALSE;
@@ -2564,8 +2865,20 @@ static BOOL start_transcribing(AppState *app, HWND target_window) {
     }
     app->worker_thread = worker;
     app->state = VOICE_TRANSCRIBING;
-    set_status(app, L"本地识别中（Sherpa）...");
-    app_log_line(app, "transcribe start backend=sherpa");
+
+    if (app->backend == ASR_BACKEND_GEMINI) {
+        set_status(app, L"Gemini 語音直輸中...");
+        app_log_line(app, "transcribe start backend=gemini");
+    } else {
+        if (app->translate_enabled) {
+            set_status(app, L"本地識別並進行 Gemini 優化中...");
+            app_log_line(app, "transcribe start backend=sherpa+gemini_polish");
+        } else {
+            set_status(app, L"本地識別中（Sherpa）...");
+            app_log_line(app, "transcribe start backend=sherpa");
+        }
+    }
+
     update_float_button(app);
     return TRUE;
 }
@@ -2831,6 +3144,23 @@ static void on_transcribe_done(AppState *app, TranscribeResult *result) {
             set_status(app, L"已丢弃暂停期间的识别结果。");
             app_log_line(app, "transcribe completely dropped due to pause state");
         } else {
+            BOOL gemini_used = (app->backend == ASR_BACKEND_GEMINI || app->translate_enabled);
+            if (gemini_used) {
+                app->history_usage_count++;
+                save_settings(app);
+                update_adaptation_progress_ui(app);
+            }
+
+            if (result->error_text && result->error_text[0] != '\0') {
+                wchar_t *err_wide = utf8_to_wide_alloc(result->error_text);
+                if (err_wide) {
+                    wchar_t log_msg[512];
+                    swprintf(log_msg, _countof(log_msg), L"警告: %ls", err_wide);
+                    add_ui_log(app, log_msg);
+                    free(err_wide);
+                }
+            }
+
             apply_user_replace_rules(app, &result->text);
             trim_ascii_whitespace(result->text);
             if (result->text[0] == '\0') {
@@ -2839,13 +3169,27 @@ static void on_transcribe_done(AppState *app, TranscribeResult *result) {
             } else {
                 apply_simple_sherpa_punctuation(app, &result->text);
                 
-                if (result->text && result->text[0] != '\0') {
+                if (result->raw_text && result->raw_text[0] != '\0') {
+                    wchar_t *wide_raw = utf8_to_wide_alloc(result->raw_text);
                     wchar_t *wide_res = utf8_to_wide_alloc(result->text);
-                    if (wide_res) {
-                        wchar_t ui_msg[1024];
-                        swprintf(ui_msg, _countof(ui_msg), L"原文: %ls", wide_res);
+                    if (wide_raw && wide_res) {
+                        wchar_t ui_msg[2048];
+                        swprintf(ui_msg, _countof(ui_msg), L"识别: %ls", wide_raw);
                         add_ui_log(app, ui_msg);
-                        free(wide_res);
+                        swprintf(ui_msg, _countof(ui_msg), L"AI:   %ls", wide_res);
+                        add_ui_log(app, ui_msg);
+                    }
+                    if (wide_raw) free(wide_raw);
+                    if (wide_res) free(wide_res);
+                } else {
+                    if (result->text && result->text[0] != '\0') {
+                        wchar_t *wide_res = utf8_to_wide_alloc(result->text);
+                        if (wide_res) {
+                            wchar_t ui_msg[1024];
+                            swprintf(ui_msg, _countof(ui_msg), L"原文: %ls", wide_res);
+                            add_ui_log(app, ui_msg);
+                            free(wide_res);
+                        }
                     }
                 }
 
@@ -2881,6 +3225,9 @@ static void on_transcribe_done(AppState *app, TranscribeResult *result) {
 
     if (result->text) {
         free(result->text);
+    }
+    if (result->raw_text) {
+        free(result->raw_text);
     }
     if (result->error_text) {
         free(result->error_text);
@@ -3012,6 +3359,7 @@ static void create_main_controls(AppState *app) {
     SendMessageW(app->model_combo, CB_ADDSTRING, 0, (LPARAM)L"Zipformer-multi-zh-hans (Transducer)");
     SendMessageW(app->model_combo, CB_ADDSTRING, 0, (LPARAM)L"FunASR-nano (2025)");
     SendMessageW(app->model_combo, CB_ADDSTRING, 0, (LPARAM)L"Qwen3-ASR-0.6B (大语言声学模型)");
+    SendMessageW(app->model_combo, CB_ADDSTRING, 0, (LPARAM)L"SenseVoice-Small (多语言/标点/事件)");
     SendMessageW(app->model_combo, CB_SETCURSEL, 0, 0);
 
     HWND btn_apply_model = CreateWindowW(L"BUTTON", L"下载并配置", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
@@ -3219,10 +3567,162 @@ static void create_main_controls(AppState *app) {
                                               NULL);
     apply_font(app->replace_rules_edit, font);
 
+    // -- Gemini AI 智慧功能設定區域 (Y = 336 到 536) --
+    HWND gemini_group = CreateWindowW(L"BUTTON", L"Gemini AI 智慧功能設定",
+                                      WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+                                      20, 336, 820, 200, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(gemini_group, font);
+
+    // 1. 啟用 Gemini (translate_check)
+    app->translate_check = CreateWindowW(L"BUTTON", L"啟用 Gemini 智慧優化與翻譯",
+                                         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                         40, 360, 240, 20, app->main_hwnd,
+                                         (HMENU)(INT_PTR)IDC_CHECK_TRANSLATE, app->instance, NULL);
+    apply_font(app->translate_check, font);
+
+    // 2. 識別後端
+    label = CreateWindowW(L"STATIC", L"識別後端：", WS_CHILD | WS_VISIBLE,
+                          310, 360, 75, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+    app->backend_combo = CreateWindowW(L"COMBOBOX", L"",
+                                       WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+                                       385, 356, 150, 200, app->main_hwnd,
+                                       (HMENU)(INT_PTR)IDC_COMBO_BACKEND, app->instance, NULL);
+    apply_font(app->backend_combo, font);
+    SendMessageW(app->backend_combo, CB_ADDSTRING, 0, (LPARAM)L"本地識別 (Sherpa)");
+    SendMessageW(app->backend_combo, CB_ADDSTRING, 0, (LPARAM)L"Gemini 語音直輸 (Native)");
+    SendMessageW(app->backend_combo, CB_SETCURSEL, 0, 0);
+
+    // 3. AI 引擎
+    label = CreateWindowW(L"STATIC", L"AI 引擎：", WS_CHILD | WS_VISIBLE,
+                          565, 360, 70, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+    app->ai_engine_combo = CreateWindowW(L"COMBOBOX", L"",
+                                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+                                         640, 356, 180, 200, app->main_hwnd,
+                                         (HMENU)(INT_PTR)IDC_COMBO_AI_ENGINE, app->instance, NULL);
+    apply_font(app->ai_engine_combo, font);
+    SendMessageW(app->ai_engine_combo, CB_ADDSTRING, 0, (LPARAM)L"Google Gemini API");
+    SendMessageW(app->ai_engine_combo, CB_ADDSTRING, 0, (LPARAM)L"本地/自訂 (OpenAI 兼容)");
+    SendMessageW(app->ai_engine_combo, CB_SETCURSEL, 0, 0);
+
+    // 4. Gemini API Key
+    label = CreateWindowW(L"STATIC", L"API Key:", WS_CHILD | WS_VISIBLE,
+                          40, 395, 60, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+    app->gemini_key_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                           WS_CHILD | WS_VISIBLE | ES_PASSWORD | ES_AUTOHSCROLL,
+                                           100, 391, 230, 24, app->main_hwnd,
+                                           (HMENU)(INT_PTR)IDC_EDIT_GEMINI_KEY, app->instance, NULL);
+    SendMessageW(app->gemini_key_edit, EM_SETLIMITTEXT, 255, 0);
+    apply_font(app->gemini_key_edit, font);
+
+    // 5. Gemini 模型 (CBS_DROPDOWN style to support typing custom local model IDs)
+    label = CreateWindowW(L"STATIC", L"模型：", WS_CHILD | WS_VISIBLE,
+                          350, 395, 45, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+    app->gemini_model_combo = CreateWindowW(L"COMBOBOX", L"",
+                                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWN,
+                                            395, 391, 200, 200, app->main_hwnd,
+                                            (HMENU)(INT_PTR)IDC_COMBO_GEMINI_MODEL, app->instance, NULL);
+    apply_font(app->gemini_model_combo, font);
+    SendMessageW(app->gemini_model_combo, CB_ADDSTRING, 0, (LPARAM)L"gemini-3.1-flash-lite");
+    SendMessageW(app->gemini_model_combo, CB_ADDSTRING, 0, (LPARAM)L"gemini-3-flash-preview");
+    SendMessageW(app->gemini_model_combo, CB_ADDSTRING, 0, (LPARAM)L"gemini-flash-lite-latest");
+    SendMessageW(app->gemini_model_combo, CB_ADDSTRING, 0, (LPARAM)L"gemini-2.5-flash");
+    SendMessageW(app->gemini_model_combo, CB_ADDSTRING, 0, (LPARAM)L"gemini-2.5-pro");
+    SendMessageW(app->gemini_model_combo, CB_ADDSTRING, 0, (LPARAM)L"gemini-1.5-flash");
+    SendMessageW(app->gemini_model_combo, CB_ADDSTRING, 0, (LPARAM)L"gemini-1.5-pro");
+    SendMessageW(app->gemini_model_combo, CB_SETCURSEL, 0, 0);
+
+    // 測試連線按鈕
+    app->btn_test_conn = CreateWindowW(L"BUTTON", L"測試連線",
+                                       WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                       610, 391, 80, 24, app->main_hwnd,
+                                       (HMENU)(INT_PTR)IDC_BTN_TEST_CONN, app->instance, NULL);
+    apply_font(app->btn_test_conn, font);
+
+    // 契合度 progress
+    label = CreateWindowW(L"STATIC", L"契合度：", WS_CHILD | WS_VISIBLE,
+                          705, 395, 50, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+    app->adaptation_label = CreateWindowW(L"STATIC", L"0% [..........]", WS_CHILD | WS_VISIBLE,
+                                          755, 395, 65, 20, app->main_hwnd,
+                                          (HMENU)(INT_PTR)IDC_LABEL_ADAPTATION, app->instance, NULL);
+    apply_font(app->adaptation_label, font);
+
+    // 6. Custom API URL
+    label = CreateWindowW(L"STATIC", L"API URL:", WS_CHILD | WS_VISIBLE,
+                          40, 430, 60, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+    app->gemini_url_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                           WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                           100, 426, 380, 24, app->main_hwnd,
+                                           (HMENU)(INT_PTR)IDC_EDIT_GEMINI_URL, app->instance, NULL);
+    SendMessageW(app->gemini_url_edit, EM_SETLIMITTEXT, 1023, 0);
+    apply_font(app->gemini_url_edit, font);
+
+    // 7. 優化風格
+    label = CreateWindowW(L"STATIC", L"風格：", WS_CHILD | WS_VISIBLE,
+                          490, 430, 45, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+    app->style_combo = CreateWindowW(L"COMBOBOX", L"",
+                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+                                     535, 426, 110, 200, app->main_hwnd,
+                                     (HMENU)(INT_PTR)IDC_COMBO_STYLE, app->instance, NULL);
+    apply_font(app->style_combo, font);
+    SendMessageW(app->style_combo, CB_ADDSTRING, 0, (LPARAM)L"智慧預設");
+    SendMessageW(app->style_combo, CB_ADDSTRING, 0, (LPARAM)L"商務正式");
+    SendMessageW(app->style_combo, CB_ADDSTRING, 0, (LPARAM)L"日常口語");
+    SendMessageW(app->style_combo, CB_ADDSTRING, 0, (LPARAM)L"簡潔扼要");
+    SendMessageW(app->style_combo, CB_ADDSTRING, 0, (LPARAM)L"自訂 Prompt");
+    SendMessageW(app->style_combo, CB_SETCURSEL, 0, 0);
+
+    // 8. 翻譯目標
+    label = CreateWindowW(L"STATIC", L"翻譯：", WS_CHILD | WS_VISIBLE,
+                          660, 430, 45, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+    app->lang_combo = CreateWindowW(L"COMBOBOX", L"",
+                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+                                    705, 426, 115, 200, app->main_hwnd,
+                                    (HMENU)(INT_PTR)IDC_COMBO_LANG, app->instance, NULL);
+    apply_font(app->lang_combo, font);
+    SendMessageW(app->lang_combo, CB_ADDSTRING, 0, (LPARAM)L"不翻譯");
+    SendMessageW(app->lang_combo, CB_ADDSTRING, 0, (LPARAM)L"英文");
+    SendMessageW(app->lang_combo, CB_ADDSTRING, 0, (LPARAM)L"日文");
+    SendMessageW(app->lang_combo, CB_ADDSTRING, 0, (LPARAM)L"韓文");
+    SendMessageW(app->lang_combo, CB_ADDSTRING, 0, (LPARAM)L"繁體中文");
+    SendMessageW(app->lang_combo, CB_ADDSTRING, 0, (LPARAM)L"簡體中文");
+    SendMessageW(app->lang_combo, CB_SETCURSEL, 0, 0);
+
+    // 9. 自訂 Prompt
+    label = CreateWindowW(L"STATIC", L"自訂指令：", WS_CHILD | WS_VISIBLE,
+                          40, 465, 75, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+    app->gemini_prompt_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                               WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                               115, 461, 520, 24, app->main_hwnd,
+                                               (HMENU)(INT_PTR)IDC_EDIT_GEMINI_PROMPT, app->instance, NULL);
+    SendMessageW(app->gemini_prompt_edit, EM_SETLIMITTEXT, 1023, 0);
+    apply_font(app->gemini_prompt_edit, font);
+    EnableWindow(app->gemini_prompt_edit, FALSE);
+
+    // 10. AI 詞彙
+    label = CreateWindowW(L"STATIC", L"AI 詞彙：", WS_CHILD | WS_VISIBLE,
+                          40, 500, 75, 20, app->main_hwnd, NULL, app->instance, NULL);
+    apply_font(label, font);
+    app->gemini_vocab_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                              WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                              115, 496, 690, 24, app->main_hwnd,
+                                              (HMENU)(INT_PTR)IDC_EDIT_GEMINI_VOCAB, app->instance, NULL);
+    SendMessageW(app->gemini_vocab_edit, EM_SETLIMITTEXT, 1023, 0);
+    apply_font(app->gemini_vocab_edit, font);
+
+    // -- 下移的控制項 (Y 加上 34 像素作相应调整) --
     app->selfcheck_label = CreateWindowW(L"STATIC",
                                          L"尚未执行自检。",
                                          WS_CHILD | WS_VISIBLE | WS_BORDER,
-                                         20, 336, 820, 64,
+                                         20, 550, 820, 64,
                                          app->main_hwnd,
                                          (HMENU)(INT_PTR)IDC_LABEL_SELFCHECK,
                                          app->instance,
@@ -3231,29 +3731,29 @@ static void create_main_controls(AppState *app) {
 
     app->status_label = CreateWindowW(L"STATIC", L"就绪。",
                                       WS_CHILD | WS_VISIBLE,
-                                      20, 410, 820, 20, app->main_hwnd,
+                                      20, 624, 820, 20, app->main_hwnd,
                                       (HMENU)(INT_PTR)IDC_LABEL_STATUS, app->instance, NULL);
     apply_font(app->status_label, font);
 
     label = CreateWindowW(L"STATIC",
                           L"关闭窗口只会最小化到托盘；若要完全退出，请点击“退出程序”或托盘菜单“退出程序”。",
                           WS_CHILD | WS_VISIBLE,
-                          20, 438, 820, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 652, 820, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     label = CreateWindowW(L"STATIC",
                           L"说明：静音时长(ms)越小越容易触发自动停止；最长录音(ms)到达后会强制结束。",
                           WS_CHILD | WS_VISIBLE,
-                          20, 460, 820, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 674, 820, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     label = CreateWindowW(L"STATIC", L"识别与处理日志 (仅保留最新100条)：", WS_CHILD | WS_VISIBLE,
-                          20, 488, 400, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 702, 400, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->log_list = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
                                     WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOINTEGRALHEIGHT | LBS_HASSTRINGS | LBS_NOTIFY,
-                                    20, 508, 820, 150, app->main_hwnd,
+                                    20, 722, 820, 150, app->main_hwnd,
                                     (HMENU)(INT_PTR)IDC_LIST_LOG, app->instance, NULL);
     apply_font(app->log_list, font);
 }
@@ -3425,6 +3925,66 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 save_settings(app);
             }
             return 0;
+        case IDC_COMBO_BACKEND:
+            if (HIWORD(wParam) == CBN_SELCHANGE) {
+                LRESULT sel = SendMessageW(app->backend_combo, CB_GETCURSEL, 0, 0);
+                if (sel == 1) {
+                    app->backend = ASR_BACKEND_GEMINI;
+                } else {
+                    app->backend = ASR_BACKEND_SHERPA;
+                }
+                save_settings(app);
+            }
+            return 0;
+        case IDC_COMBO_LANG:
+            if (HIWORD(wParam) == CBN_SELCHANGE) {
+                LRESULT sel = SendMessageW(app->lang_combo, CB_GETCURSEL, 0, 0);
+                if (sel != CB_ERR) {
+                    SendMessageW(app->lang_combo, CB_GETLBTEXT, (WPARAM)sel, (LPARAM)app->target_lang);
+                }
+                save_settings(app);
+            }
+            return 0;
+        case IDC_COMBO_GEMINI_MODEL:
+            if (HIWORD(wParam) == CBN_SELCHANGE || HIWORD(wParam) == CBN_EDITCHANGE) {
+                GetWindowTextW(app->gemini_model_combo, app->gemini_model, _countof(app->gemini_model));
+                trim_wide_whitespace(app->gemini_model);
+                save_settings(app);
+            }
+            return 0;
+        case IDC_COMBO_STYLE:
+            if (HIWORD(wParam) == CBN_SELCHANGE) {
+                LRESULT sel = SendMessageW(app->style_combo, CB_GETCURSEL, 0, 0);
+                if (sel == 4) {
+                    EnableWindow(app->gemini_prompt_edit, TRUE);
+                } else {
+                    EnableWindow(app->gemini_prompt_edit, FALSE);
+                }
+                SendMessageW(app->style_combo, CB_GETLBTEXT, (WPARAM)sel, (LPARAM)app->gemini_style);
+                save_settings(app);
+                update_adaptation_progress_ui(app);
+            }
+            return 0;
+        case IDC_CHECK_TRANSLATE:
+            if (HIWORD(wParam) == BN_CLICKED) {
+                app->translate_enabled = is_checked(app->translate_check);
+                save_settings(app);
+            }
+            return 0;
+        case IDC_COMBO_AI_ENGINE:
+            if (HIWORD(wParam) == CBN_SELCHANGE) {
+                LRESULT sel = SendMessageW(app->ai_engine_combo, CB_GETCURSEL, 0, 0);
+                if (sel != CB_ERR) {
+                    app->ai_engine_index = (int)sel;
+                }
+                save_settings(app);
+            }
+            return 0;
+        case IDC_BTN_TEST_CONN: {
+            HANDLE thread = CreateThread(NULL, 0, test_conn_thread_proc, app, 0, NULL);
+            if (thread) CloseHandle(thread);
+            return 0;
+        }
         case IDC_BTN_APPLY:
             if (apply_hotkey_from_ui(app, FALSE)) {
                 apply_runtime_settings_from_ui(app, TRUE);
@@ -3620,7 +4180,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
 
     app.main_hwnd = CreateWindowExW(0, MAIN_CLASS_NAME, APP_TITLE,
                                     WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-                                    CW_USEDEFAULT, CW_USEDEFAULT, 920, 700,
+                                    CW_USEDEFAULT, CW_USEDEFAULT, 920, 920,
                                     NULL, NULL, hInstance, &app);
     if (!app.main_hwnd) {
         return 1;
@@ -3636,6 +4196,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
     }
 
     load_settings(&app);
+    asr_init_prompts();
     app_log_line(&app, "application startup");
     if (app.backend == ASR_BACKEND_SHERPA && app.sherpa_daemon_mode) {
         ensure_sherpa_daemon_running(&app);

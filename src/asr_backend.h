@@ -23,4 +23,31 @@ BOOL sherpa_transcribe_wav_websocket(const wchar_t *wav_path,
                                      char **out_utf8_text,
                                      char **out_error_utf8);
 
+BOOL gemini_transcribe_audio(const wchar_t *wav_path,
+                             const char *api_key,
+                             const char *model_name,
+                             const char *custom_url,
+                             const char *target_lang,
+                             const char *style,
+                             const char *custom_prompt,
+                             const char *replace_rules,
+                             const char *ai_vocab,
+                             char **out_utf8_text,
+                             char **out_error_utf8);
+
+BOOL gemini_polish_text(const char *input_text,
+                        const char *api_key,
+                        const char *model_name,
+                        const char *custom_url,
+                        int ai_engine,
+                        const char *target_lang,
+                        const char *style,
+                        const char *custom_prompt,
+                        const char *replace_rules,
+                        const char *ai_vocab,
+                        char **out_utf8_text,
+                        char **out_error_utf8);
+
+void asr_init_prompts(void);
+
 #endif
