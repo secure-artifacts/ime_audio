@@ -7,6 +7,8 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <commctrl.h>
+#pragma comment(lib, "comctl32.lib")
 
 #include "asr_backend.h"
 #include "audio_recorder.h"
@@ -71,6 +73,27 @@
 #define IDC_COMBO_AI_ENGINE 2048
 #define IDC_EDIT_GEMINI_VOCAB 2049
 
+#define TERM_TEXT_CAP 32768
+#define IDC_BTN_OPEN_TERMS 2050
+#define IDC_BTN_RELOAD_TERMS 2051
+#define IDC_BTN_CHECK_TERMS 2052
+
+#define IDC_TERMS_LISTVIEW 5001
+#define IDC_TERMS_SEARCH_EDIT 5002
+#define IDC_TERMS_BTN_SEARCH 5003
+#define IDC_TERMS_BTN_ADD 5010
+#define IDC_TERMS_BTN_DELETE 5012
+#define IDC_TERMS_BTN_SAVE 5013
+#define IDC_TERMS_BTN_CANCEL 5014
+#define IDC_TERMS_BTN_IMPORT 5015
+#define IDC_TERMS_BTN_EXPORT 5016
+#define IDC_TERMS_BTN_CHECK 5017
+#define IDC_TERMS_BTN_SELECT_ALL 5018
+#define IDC_TERMS_BTN_INVERT_SEL 5019
+#define IDC_TERMS_BTN_BATCH_ENABLE 5020
+#define IDC_TERMS_BTN_BATCH_DISABLE 5021
+#define IDC_TERMS_CELL_EDIT 5022
+
 #define IDC_FLOAT_TOGGLE 3001
 #define IDC_FLOAT_STATUS 3002
 
@@ -129,6 +152,7 @@ typedef struct AppState {
     HWND float_button;
     HWND float_status;
     HWND log_list;
+    HWND terms_editor_hwnd;
 
     wchar_t config_path[MAX_PATH];
     wchar_t wav_path[MAX_PATH];
@@ -136,6 +160,14 @@ typedef struct AppState {
     wchar_t sherpa_exe[2048];
     wchar_t sherpa_args[4096];
     wchar_t replace_rules[2048];
+    wchar_t terms_path[MAX_PATH];
+    wchar_t terms_replace_rules[TERM_TEXT_CAP];
+    wchar_t terms_ai_vocab[TERM_TEXT_CAP];
+    wchar_t terms_hotwords[TERM_TEXT_CAP];
+    int terms_enabled_count;
+    int terms_replace_count;
+    int terms_ai_count;
+    int terms_hotword_count;
     wchar_t gemini_key[256];
     wchar_t gemini_url[1024];
     int ai_engine_index;
@@ -214,6 +246,13 @@ static void save_settings(AppState *app);
 static void refresh_mic_list(AppState *app);
 static char *wide_to_utf8_alloc(const wchar_t *wide_text);
 static wchar_t *utf8_to_wide_alloc(const char *utf8_text);
+static BOOL reload_terms_library(AppState *app, BOOL notify_user, BOOL restart_daemon);
+static void build_combined_terms_text(const wchar_t *primary, const wchar_t *secondary, const wchar_t *separator, wchar_t *out, size_t out_count);
+static void remove_sherpa_arg_option(wchar_t *args, size_t args_count, const wchar_t *option_name);
+static void apply_terms_hotwords_to_sherpa_args(AppState *app, const wchar_t *hotwords_path);
+static BOOL build_terms_path(wchar_t *out_path, DWORD out_path_size);
+static void restart_sherpa_daemon_if_needed(AppState *app);
+static LRESULT CALLBACK TermsEditorWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 static BOOL build_temp_wav_path(wchar_t *out_path, DWORD out_path_size) {
     wchar_t temp_dir[MAX_PATH];
@@ -1564,6 +1603,304 @@ static DWORD WINAPI test_conn_thread_proc(LPVOID param) {
     return 0;
 }
 
+static BOOL build_terms_path(wchar_t *out_path, DWORD out_path_size) {
+    wchar_t exe_path[MAX_PATH];
+    wchar_t app_dir[MAX_PATH];
+    GetModuleFileNameW(NULL, exe_path, MAX_PATH);
+    {
+        wchar_t short_path[MAX_PATH];
+        if (GetShortPathNameW(exe_path, short_path, MAX_PATH)) {
+            wcsncpy_s(exe_path, MAX_PATH, short_path, _TRUNCATE);
+        }
+    }
+    extract_parent_dir(exe_path, app_dir, _countof(app_dir));
+    if (swprintf(out_path, out_path_size, L"%ls\\terms.tsv", app_dir) > 0) {
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static void build_combined_terms_text(const wchar_t *primary, const wchar_t *secondary, const wchar_t *separator, wchar_t *out, size_t out_count) {
+    if (!out || out_count == 0) return;
+    out[0] = L'\0';
+    if (primary && primary[0] != L'\0') {
+        wcscat_s(out, out_count, primary);
+    }
+    if (secondary && secondary[0] != L'\0') {
+        if (out[0] != L'\0' && separator) {
+            wcscat_s(out, out_count, separator);
+        }
+        wcscat_s(out, out_count, secondary);
+    }
+}
+
+static void remove_sherpa_arg_option(wchar_t *args, size_t args_count, const wchar_t *option_name) {
+    if (!args || !option_name || option_name[0] == L'\0') return;
+
+    wchar_t *p = args;
+    size_t opt_len = wcslen(option_name);
+
+    while (p && *p) {
+        while (*p && iswspace(*p)) p++;
+        if (*p == L'\0') break;
+
+        if (_wcsnicmp(p, option_name, opt_len) == 0) {
+            wchar_t *start = p;
+            wchar_t *val = p + opt_len;
+            
+            while (*val && iswspace(*val)) val++;
+            if (*val == L'=') {
+                val++;
+                while (*val && iswspace(*val)) val++;
+                
+                if (*val == L'"') {
+                    val++;
+                    while (*val && *val != L'"') val++;
+                    if (*val == L'"') val++;
+                } else {
+                    while (*val && !iswspace(*val)) val++;
+                }
+            } else {
+                val = p + opt_len;
+            }
+
+            while (*val && iswspace(*val)) val++;
+            
+            size_t remaining = wcslen(val);
+            memmove(start, val, (remaining + 1) * sizeof(wchar_t));
+            p = start;
+        } else {
+            while (*p && !iswspace(*p)) p++;
+        }
+    }
+
+    trim_wide_whitespace(args);
+}
+
+static void apply_terms_hotwords_to_sherpa_args(AppState *app, const wchar_t *hotwords_path) {
+    if (!app) return;
+
+    remove_sherpa_arg_option(app->sherpa_args, _countof(app->sherpa_args), L"--hotwords-file");
+    remove_sherpa_arg_option(app->sherpa_args, _countof(app->sherpa_args), L"--hotwords-score");
+    remove_sherpa_arg_option(app->sherpa_args, _countof(app->sherpa_args), L"--funasr-nano-hotwords");
+    remove_sherpa_arg_option(app->sherpa_args, _countof(app->sherpa_args), L"--qwen3-asr-hotwords");
+
+    if (app->sherpa_args_edit) {
+        SetWindowTextW(app->sherpa_args_edit, app->sherpa_args);
+    }
+
+    if (app->terms_hotword_count == 0) {
+        return;
+    }
+
+    wchar_t tmp[512];
+    BOOL has_funasr = extract_option_value(app->sherpa_args, L"--funasr-nano-llm=", tmp, _countof(tmp));
+    BOOL has_qwen3 = extract_option_value(app->sherpa_args, L"--qwen3-asr-encoder=", tmp, _countof(tmp));
+
+    wchar_t append_args[512];
+    if (has_funasr) {
+        swprintf_s(append_args, _countof(append_args), L" --funasr-nano-hotwords=\"%ls\"", hotwords_path);
+    } else if (has_qwen3) {
+        swprintf_s(append_args, _countof(append_args), L" --qwen3-asr-hotwords=\"%ls\"", hotwords_path);
+    } else {
+        swprintf_s(append_args, _countof(append_args), L" --hotwords-file=\"%ls\"", hotwords_path);
+    }
+
+    if (wcslen(app->sherpa_args) + wcslen(append_args) < _countof(app->sherpa_args)) {
+        wcscat_s(app->sherpa_args, _countof(app->sherpa_args), append_args);
+    }
+
+    if (app->sherpa_args_edit) {
+        SetWindowTextW(app->sherpa_args_edit, app->sherpa_args);
+    }
+}
+
+static void restart_sherpa_daemon_if_needed(AppState *app) {
+    if (!app) return;
+    if (app->sherpa_daemon_process) {
+        TerminateProcess(app->sherpa_daemon_process, 0);
+        CloseHandle(app->sherpa_daemon_process);
+        app->sherpa_daemon_process = NULL;
+        app->sherpa_daemon_pid = 0;
+    }
+    if (app->backend == ASR_BACKEND_SHERPA && app->sherpa_daemon_mode) {
+        ensure_sherpa_daemon_running(app);
+    }
+}
+
+static BOOL reload_terms_library(AppState *app, BOOL notify_user, BOOL restart_daemon) {
+    if (!app) return FALSE;
+
+    app->terms_replace_rules[0] = L'\0';
+    app->terms_ai_vocab[0] = L'\0';
+    app->terms_hotwords[0] = L'\0';
+    app->terms_enabled_count = 0;
+    app->terms_replace_count = 0;
+    app->terms_ai_count = 0;
+    app->terms_hotword_count = 0;
+
+    FILE *fp = NULL;
+    if (_wfopen_s(&fp, app->terms_path, L"r, ccs=UTF-8") != 0 || !fp) {
+        if (notify_user) {
+            MessageBoxW(app->main_hwnd, L"未找到术语库文件 terms.tsv。", APP_TITLE, MB_ICONINFORMATION);
+        }
+        return FALSE;
+    }
+
+    wchar_t line[4096];
+    while (fgetws(line, _countof(line), fp)) {
+        size_t len = wcslen(line);
+        while (len > 0 && (line[len - 1] == L'\r' || line[len - 1] == L'\n')) {
+            line[--len] = L'\0';
+        }
+
+        if (line[0] == L'\0' || line[0] == L'#') {
+            continue;
+        }
+
+        wchar_t *cols[10] = {0};
+        int col_count = 0;
+        wchar_t *ptr = line;
+        cols[col_count++] = ptr;
+        while (*ptr && col_count < 10) {
+            if (*ptr == L'\t') {
+                *ptr = L'\0';
+                cols[col_count++] = ptr + 1;
+            }
+            ptr++;
+        }
+
+        if (col_count < 3) continue;
+
+        wchar_t *enabled = cols[0];
+        wchar_t *wrong = cols[1];
+        wchar_t *correct = cols[2];
+
+        trim_wide_whitespace(enabled);
+        trim_wide_whitespace(wrong);
+        trim_wide_whitespace(correct);
+
+        if (wcscmp(enabled, L"enabled") == 0) {
+            continue;
+        }
+
+        if (wcscmp(enabled, L"1") != 0) {
+            continue;
+        }
+
+        if (wrong[0] == L'\0' || correct[0] == L'\0') {
+            continue;
+        }
+
+        app->terms_enabled_count++;
+
+        wchar_t *aliases = (col_count > 3) ? cols[3] : L"";
+        wchar_t *mode = (col_count > 4) ? cols[4] : L"all";
+        trim_wide_whitespace(aliases);
+        trim_wide_whitespace(mode);
+
+        BOOL mode_replace = (wcsstr(mode, L"replace") != NULL || wcscmp(mode, L"all") == 0 || mode[0] == L'\0');
+        BOOL mode_ai = (wcsstr(mode, L"ai") != NULL || wcscmp(mode, L"all") == 0 || mode[0] == L'\0');
+        BOOL mode_hotword = (wcsstr(mode, L"hotword") != NULL || wcscmp(mode, L"all") == 0 || mode[0] == L'\0');
+
+        if (mode_replace) {
+            wchar_t rule[512];
+            swprintf_s(rule, _countof(rule), L"%ls=%ls;", wrong, correct);
+            if (wcslen(app->terms_replace_rules) + wcslen(rule) + 1 < TERM_TEXT_CAP) {
+                wcscat_s(app->terms_replace_rules, _countof(app->terms_replace_rules), rule);
+                app->terms_replace_count++;
+            }
+
+            if (aliases[0] != L'\0') {
+                wchar_t aliases_copy[512];
+                wcsncpy_s(aliases_copy, _countof(aliases_copy), aliases, _TRUNCATE);
+                wchar_t *alias_context = NULL;
+                wchar_t *alias = wcstok_s(aliases_copy, L",，、/;；", &alias_context);
+                while (alias) {
+                    trim_wide_whitespace(alias);
+                    if (alias[0] != L'\0') {
+                        swprintf_s(rule, _countof(rule), L"%ls=%ls;", alias, correct);
+                        if (wcslen(app->terms_replace_rules) + wcslen(rule) + 1 < TERM_TEXT_CAP) {
+                            wcscat_s(app->terms_replace_rules, _countof(app->terms_replace_rules), rule);
+                        }
+                    }
+                    alias = wcstok_s(NULL, L",，、/;；", &alias_context);
+                }
+            }
+        }
+
+        if (mode_ai) {
+            wchar_t item[512];
+            swprintf_s(item, _countof(item), L"%ls=%ls;", wrong, correct);
+            if (wcslen(app->terms_ai_vocab) + wcslen(item) + 1 < TERM_TEXT_CAP) {
+                wcscat_s(app->terms_ai_vocab, _countof(app->terms_ai_vocab), item);
+                app->terms_ai_count++;
+            }
+        }
+
+        if (mode_hotword) {
+            wchar_t hw[1024] = L"";
+            swprintf_s(hw, _countof(hw), L"%ls\n", wrong);
+            if (wcslen(app->terms_hotwords) + wcslen(hw) + 1 < TERM_TEXT_CAP && !wcsstr(app->terms_hotwords, wrong)) {
+                wcscat_s(app->terms_hotwords, _countof(app->terms_hotwords), hw);
+                app->terms_hotword_count++;
+            }
+
+            swprintf_s(hw, _countof(hw), L"%ls\n", correct);
+            if (wcslen(app->terms_hotwords) + wcslen(hw) + 1 < TERM_TEXT_CAP && !wcsstr(app->terms_hotwords, correct)) {
+                wcscat_s(app->terms_hotwords, _countof(app->terms_hotwords), hw);
+            }
+
+            if (aliases[0] != L'\0') {
+                wchar_t aliases_copy[512];
+                wcsncpy_s(aliases_copy, _countof(aliases_copy), aliases, _TRUNCATE);
+                wchar_t *alias_context = NULL;
+                wchar_t *alias = wcstok_s(aliases_copy, L",，、/;；", &alias_context);
+                while (alias) {
+                    trim_wide_whitespace(alias);
+                    if (alias[0] != L'\0') {
+                        swprintf_s(hw, _countof(hw), L"%ls\n", alias);
+                        if (wcslen(app->terms_hotwords) + wcslen(hw) + 1 < TERM_TEXT_CAP && !wcsstr(app->terms_hotwords, alias)) {
+                            wcscat_s(app->terms_hotwords, _countof(app->terms_hotwords), hw);
+                        }
+                    }
+                    alias = wcstok_s(NULL, L",，、/;；", &alias_context);
+                }
+            }
+        }
+    }
+
+    fclose(fp);
+
+    wchar_t hw_path[MAX_PATH];
+    wchar_t app_dir[MAX_PATH];
+    GetModuleFileNameW(NULL, app_dir, MAX_PATH);
+    wchar_t *last_slash = wcsrchr(app_dir, L'\\');
+    if (last_slash) *last_slash = L'\0';
+    swprintf_s(hw_path, _countof(hw_path), L"%ls\\hotwords.txt", app_dir);
+
+    FILE *hw_fp = NULL;
+    if (_wfopen_s(&hw_fp, hw_path, L"w, ccs=UTF-8") == 0 && hw_fp) {
+        fputws(app->terms_hotwords, hw_fp);
+        fclose(hw_fp);
+    }
+
+    apply_terms_hotwords_to_sherpa_args(app, hw_path);
+
+    if (restart_daemon) {
+        restart_sherpa_daemon_if_needed(app);
+    }
+
+    if (notify_user) {
+        wchar_t msg[512];
+        swprintf_s(msg, _countof(msg), L"词库重载成功！\n共启用 %d 条，生成替换规则 %d 条，AI词汇 %d 条，本地热词 %d 条。",
+                  app->terms_enabled_count, app->terms_replace_count, app->terms_ai_count, app->terms_hotword_count);
+        MessageBoxW(app->main_hwnd, msg, APP_TITLE, MB_OK | MB_ICONINFORMATION);
+    }
+
+    return TRUE;
+}
+
 static void sync_runtime_settings_to_ui(AppState *app) {
     if (!app) {
         return;
@@ -2504,6 +2841,9 @@ static void load_settings(AppState *app) {
         set_checked(app->check_win, (mods & MOD_WIN) != 0);
     }
 
+    build_terms_path(app->terms_path, _countof(app->terms_path));
+    reload_terms_library(app, FALSE, FALSE);
+
     sync_runtime_settings_to_ui(app);
     refresh_mic_list(app);
     save_settings(app);
@@ -2840,10 +3180,22 @@ static BOOL start_transcribing(AppState *app, HWND target_window) {
     if (app->gemini_url[0] != L'\0') task->api_url = wide_to_utf8_alloc(app->gemini_url);
     task->ai_engine = app->ai_engine_index;
     if (app->gemini_prompt[0] != L'\0') task->custom_prompt = wide_to_utf8_alloc(app->gemini_prompt);
-    if (app->gemini_vocab[0] != L'\0') task->ai_vocab = wide_to_utf8_alloc(app->gemini_vocab);
+    {
+        wchar_t combined_vocab[4096 + TERM_TEXT_CAP] = L"";
+        build_combined_terms_text(app->gemini_vocab, app->terms_ai_vocab, L";", combined_vocab, _countof(combined_vocab));
+        if (combined_vocab[0] != L'\0') {
+            task->ai_vocab = wide_to_utf8_alloc(combined_vocab);
+        }
+    }
     if (app->target_lang[0] != L'\0') task->target_lang = wide_to_utf8_alloc(app->target_lang);
     if (app->gemini_style[0] != L'\0') task->gemini_style = wide_to_utf8_alloc(app->gemini_style);
-    if (app->replace_rules[0] != L'\0') task->replace_rules = wide_to_utf8_alloc(app->replace_rules);
+    {
+        wchar_t combined_rules[4096 + TERM_TEXT_CAP] = L"";
+        build_combined_terms_text(app->replace_rules, app->terms_replace_rules, L";", combined_rules, _countof(combined_rules));
+        if (combined_rules[0] != L'\0') {
+            task->replace_rules = wide_to_utf8_alloc(combined_rules);
+        }
+    }
 
     worker = CreateThread(NULL, 0, transcribe_thread_proc, task, 0, NULL);
     if (!worker) {
@@ -3497,70 +3849,88 @@ static void create_main_controls(AppState *app) {
 
     app->sherpa_gpu_check = CreateWindowW(L"BUTTON", L"GPU (CUDA) 加速",
                                           WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                          330, 250, 160, 20, app->main_hwnd,
+                                          330, 246, 160, 20, app->main_hwnd,
                                           (HMENU)(INT_PTR)IDC_CHECK_SHERPA_GPU, app->instance, NULL);
     apply_font(app->sherpa_gpu_check, font);
 
     app->check_ctrl = CreateWindowW(L"BUTTON", L"Ctrl", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                    20, 250, 70, 20, app->main_hwnd,
+                                    20, 246, 70, 20, app->main_hwnd,
                                     (HMENU)(INT_PTR)IDC_CHECK_CTRL, app->instance, NULL);
     apply_font(app->check_ctrl, font);
 
     app->check_alt = CreateWindowW(L"BUTTON", L"Alt", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                   95, 250, 70, 20, app->main_hwnd,
+                                   95, 246, 70, 20, app->main_hwnd,
                                    (HMENU)(INT_PTR)IDC_CHECK_ALT, app->instance, NULL);
     apply_font(app->check_alt, font);
 
     app->check_shift = CreateWindowW(L"BUTTON", L"Shift", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                     170, 250, 70, 20, app->main_hwnd,
+                                     170, 246, 70, 20, app->main_hwnd,
                                      (HMENU)(INT_PTR)IDC_CHECK_SHIFT, app->instance, NULL);
     apply_font(app->check_shift, font);
 
     app->check_win = CreateWindowW(L"BUTTON", L"Win", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                   245, 250, 70, 20, app->main_hwnd,
+                                   245, 246, 70, 20, app->main_hwnd,
                                    (HMENU)(INT_PTR)IDC_CHECK_WIN, app->instance, NULL);
     apply_font(app->check_win, font);
 
     app->current_hotkey_label = CreateWindowW(L"STATIC", L"当前快捷键：未设置",
                                               WS_CHILD | WS_VISIBLE,
-                                              20, 278, 260, 20, app->main_hwnd,
+                                              20, 276, 260, 20, app->main_hwnd,
                                               (HMENU)(INT_PTR)IDC_LABEL_CURRENT_HOTKEY,
                                               app->instance, NULL);
     apply_font(app->current_hotkey_label, font);
 
     button = CreateWindowW(L"BUTTON", L"保存设置",
                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                           530, 214, 120, 30, app->main_hwnd,
+                           530, 214, 120, 24, app->main_hwnd,
                            (HMENU)(INT_PTR)IDC_BTN_APPLY, app->instance, NULL);
     apply_font(button, font);
 
     button = CreateWindowW(L"BUTTON", L"配置自检",
                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                           660, 214, 120, 30, app->main_hwnd,
+                           660, 214, 120, 24, app->main_hwnd,
                            (HMENU)(INT_PTR)IDC_BTN_SELF_CHECK, app->instance, NULL);
     apply_font(button, font);
 
     button = CreateWindowW(L"BUTTON", L"安装本地模型（Sherpa）",
                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                           530, 250, 250, 30, app->main_hwnd,
+                           530, 244, 250, 24, app->main_hwnd,
                            (HMENU)(INT_PTR)IDC_BTN_INSTALL_SHERPA, app->instance, NULL);
     apply_font(button, font);
 
     button = CreateWindowW(L"BUTTON", L"退出程序",
                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                           530, 286, 250, 24, app->main_hwnd,
+                           530, 274, 250, 24, app->main_hwnd,
                            (HMENU)(INT_PTR)IDC_BTN_EXIT, app->instance, NULL);
     apply_font(button, font);
 
+    button = CreateWindowW(L"BUTTON", L"打开词库",
+                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                           530, 304, 80, 24, app->main_hwnd,
+                           (HMENU)(INT_PTR)IDC_BTN_OPEN_TERMS, app->instance, NULL);
+    apply_font(button, font);
+
+    button = CreateWindowW(L"BUTTON", L"重载词库",
+                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                           615, 304, 80, 24, app->main_hwnd,
+                           (HMENU)(INT_PTR)IDC_BTN_RELOAD_TERMS, app->instance, NULL);
+    apply_font(button, font);
+
+    button = CreateWindowW(L"BUTTON", L"词库检查",
+                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                           700, 304, 80, 24, app->main_hwnd,
+                           (HMENU)(INT_PTR)IDC_BTN_CHECK_TERMS, app->instance, NULL);
+    apply_font(button, font);
+
     label = CreateWindowW(L"STATIC", L"术语纠错（错词=正词；多条用分号）：", WS_CHILD | WS_VISIBLE,
-                          20, 304, 260, 20, app->main_hwnd, NULL, app->instance, NULL);
+                          20, 306, 260, 20, app->main_hwnd, NULL, app->instance, NULL);
     apply_font(label, font);
 
     app->replace_rules_edit = CreateWindowExW(WS_EX_CLIENTEDGE,
                                               L"EDIT",
                                               L"",
                                               WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                              280, 300, 240, 24,
+                                              280, 304, 240, 24,
                                               app->main_hwnd,
                                               (HMENU)(INT_PTR)IDC_EDIT_REPLACE_RULES,
                                               app->instance,
@@ -4012,6 +4382,112 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             ShellExecuteW(NULL, L"open", config_dir, NULL, NULL, SW_SHOWNORMAL);
             return 0;
         }
+        case IDC_BTN_OPEN_TERMS: {
+            if (app->terms_path[0] == L'\0') {
+                build_terms_path(app->terms_path, _countof(app->terms_path));
+            }
+            if (app->terms_editor_hwnd && IsWindow(app->terms_editor_hwnd)) {
+                SetActiveWindow(app->terms_editor_hwnd);
+                ShowWindow(app->terms_editor_hwnd, SW_SHOWNORMAL);
+            } else {
+                app->terms_editor_hwnd = CreateWindowExW(
+                    WS_EX_DLGMODALFRAME,
+                    L"VoiceImeTermsEditor",
+                    L"术语库内置编辑器",
+                    WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+                    CW_USEDEFAULT, CW_USEDEFAULT, 920, 680,
+                    app->main_hwnd, NULL, app->instance, app
+                );
+                if (app->terms_editor_hwnd) {
+                    ShowWindow(app->terms_editor_hwnd, SW_SHOWNORMAL);
+                    UpdateWindow(app->terms_editor_hwnd);
+                }
+            }
+            return 0;
+        }
+        case IDC_BTN_RELOAD_TERMS: {
+            reload_terms_library(app, TRUE, TRUE);
+            return 0;
+        }
+        case IDC_BTN_CHECK_TERMS: {
+            if (app->terms_path[0] == L'\0') {
+                build_terms_path(app->terms_path, _countof(app->terms_path));
+            }
+            FILE *fp = NULL;
+            if (_wfopen_s(&fp, app->terms_path, L"r, ccs=UTF-8") != 0 || !fp) {
+                MessageBoxW(app->main_hwnd, L"未找到术语库文件 terms.tsv。", APP_TITLE, MB_ICONWARNING);
+                return 0;
+            }
+            wchar_t line[4096];
+            int line_num = 0;
+            int error_count = 0;
+            wchar_t report[2048] = L"术语库检查报告：\n";
+            while (fgetws(line, _countof(line), fp)) {
+                line_num++;
+                size_t len = wcslen(line);
+                while (len > 0 && (line[len - 1] == L'\r' || line[len - 1] == L'\n')) {
+                    line[--len] = L'\0';
+                }
+                if (line[0] == L'\0' || line[0] == L'#') {
+                    continue;
+                }
+                wchar_t *cols[10] = {0};
+                int col_count = 0;
+                wchar_t *ptr = line;
+                cols[col_count++] = ptr;
+                while (*ptr && col_count < 10) {
+                    if (*ptr == L'\t') {
+                        *ptr = L'\0';
+                        cols[col_count++] = ptr + 1;
+                    }
+                    ptr++;
+                }
+                if (col_count < 3) {
+                    if (error_count < 5) {
+                        wchar_t err_msg[256];
+                        swprintf_s(err_msg, _countof(err_msg), L"第 %d 行：列数少于 3 列\n", line_num);
+                        wcscat_s(report, _countof(report), err_msg);
+                    }
+                    error_count++;
+                    continue;
+                }
+                wchar_t *enabled = cols[0];
+                wchar_t *wrong = cols[1];
+                wchar_t *correct = cols[2];
+                trim_wide_whitespace(enabled);
+                trim_wide_whitespace(wrong);
+                trim_wide_whitespace(correct);
+                if (wcscmp(enabled, L"enabled") == 0) {
+                    continue;
+                }
+                if (wrong[0] == L'\0' && wcscmp(enabled, L"1") == 0) {
+                    if (error_count < 5) {
+                        wchar_t err_msg[256];
+                        swprintf_s(err_msg, _countof(err_msg), L"第 %d 行：启用状态下“错词”不能为空\n", line_num);
+                        wcscat_s(report, _countof(report), err_msg);
+                    }
+                    error_count++;
+                }
+                if (correct[0] == L'\0' && wcscmp(enabled, L"1") == 0) {
+                    if (error_count < 5) {
+                        wchar_t err_msg[256];
+                        swprintf_s(err_msg, _countof(err_msg), L"第 %d 行：启用状态下“正词”不能为空\n", line_num);
+                        wcscat_s(report, _countof(report), err_msg);
+                    }
+                    error_count++;
+                }
+            }
+            fclose(fp);
+            if (error_count == 0) {
+                MessageBoxW(app->main_hwnd, L"术语库自检通过，未发现格式错误！", APP_TITLE, MB_OK | MB_ICONINFORMATION);
+            } else {
+                wchar_t summary[256];
+                swprintf_s(summary, _countof(summary), L"\n共发现 %d 处错误。", error_count);
+                wcscat_s(report, _countof(report), summary);
+                MessageBoxW(app->main_hwnd, report, APP_TITLE, MB_OK | MB_ICONWARNING);
+            }
+            return 0;
+        }
         case IDC_BTN_INSTALL_SHERPA:
             launch_sherpa_installer(app);
             return 0;
@@ -4178,6 +4654,19 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
         return 1;
     }
 
+    WNDCLASSEXW terms_class;
+    ZeroMemory(&terms_class, sizeof(terms_class));
+    terms_class.cbSize = sizeof(terms_class);
+    terms_class.lpfnWndProc = TermsEditorWndProc;
+    terms_class.hInstance = hInstance;
+    terms_class.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+    terms_class.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    terms_class.lpszClassName = L"VoiceImeTermsEditor";
+
+    if (!RegisterClassExW(&terms_class)) {
+        return 1;
+    }
+
     app.main_hwnd = CreateWindowExW(0, MAIN_CLASS_NAME, APP_TITLE,
                                     WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
                                     CW_USEDEFAULT, CW_USEDEFAULT, 920, 920,
@@ -4241,4 +4730,925 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
 
     CoUninitialize();
     return (int)message.wParam;
+}
+
+// Unicode ListView macros for MBCS compilation
+#define ListView_InsertColumnW(hwnd, iCol, pcol) \
+    (int)SendMessageW((hwnd), LVM_INSERTCOLUMNW, (WPARAM)(int)(iCol), (LPARAM)(const LVCOLUMNW*)(pcol))
+
+#define ListView_InsertItemW(hwnd, pitem) \
+    (int)SendMessageW((hwnd), LVM_INSERTITEMW, 0, (LPARAM)(const LVITEMW*)(pitem))
+
+#define ListView_SetItemTextW(hwnd, i, iSubItem_, pszText_) \
+    { LVITEMW _lvi; \
+      ZeroMemory(&_lvi, sizeof(_lvi)); \
+      _lvi.iSubItem = iSubItem_; \
+      _lvi.pszText = pszText_; \
+      SendMessageW((hwnd), LVM_SETITEMTEXTW, (WPARAM)(i), (LPARAM)&_lvi); \
+    }
+
+#define ListView_GetItemW(hwnd, pitem) \
+    (BOOL)SendMessageW((hwnd), LVM_GETITEMW, 0, (LPARAM)(LVITEMW*)(pitem))
+
+#define ListView_GetItemTextW(hwndLV, i, iSubItem_, pszText_, cchTextMax_) \
+{ LVITEMW _lvi; \
+  ZeroMemory(&_lvi, sizeof(_lvi)); \
+  _lvi.iSubItem = iSubItem_; \
+  _lvi.cchTextMax = cchTextMax_; \
+  _lvi.pszText = pszText_; \
+  SendMessageW((hwndLV), LVM_GETITEMTEXTW, (WPARAM)(i), (LPARAM)&_lvi); \
+}
+
+typedef struct TermItem {
+    BOOL enabled;
+    wchar_t wrong[128];
+    wchar_t correct[128];
+    wchar_t aliases[256];
+    wchar_t mode[64];
+    wchar_t tags[128];
+    wchar_t notes[256];
+} TermItem;
+
+#define MAX_EDITOR_TERMS 2048
+
+typedef struct TermsEditorState {
+    AppState *app;
+    HWND hwndSelf;
+    HWND hwndLV;
+    HWND hwndSearch;
+    WNDPROC fnOldLVWndProc;    // Original ListView window proc
+    WNDPROC fnOldEditWndProc;  // Original Edit window proc
+    HWND hwndCellEdit;         // Active floating Edit control handle
+    int edit_row;              // Current editing row index
+    int edit_col;              // Current editing column index
+    BOOL is_updating;          // Ignore notifications when updating ListView
+    TermItem terms[MAX_EDITOR_TERMS];
+    int term_count;
+    wchar_t filter[128];
+} TermsEditorState;
+
+static LRESULT CALLBACK CellEditSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+static void CommitCellEdit(TermsEditorState *state, BOOL save_changes);
+static void StartCellEdit(TermsEditorState *state, int row, int col);
+static LRESULT CALLBACK ListViewSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+static void CommitCellEdit(TermsEditorState *state, BOOL save_changes) {
+    if (!state->hwndCellEdit) return;
+
+    HWND hwndEdit = state->hwndCellEdit;
+    // Set hwndCellEdit to NULL first to prevent re-entry during destruction
+    state->hwndCellEdit = NULL;
+
+    if (save_changes) {
+        wchar_t text[512];
+        GetWindowTextW(hwndEdit, text, _countof(text));
+        trim_wide_whitespace(text);
+
+        // Validation for Mode column (Column 3)
+        if (state->edit_col == 3) {
+            if (wcscmp(text, L"all") != 0 && wcscmp(text, L"replace") != 0 &&
+                wcscmp(text, L"ai") != 0 && wcscmp(text, L"hotword") != 0) {
+                MessageBoxW(state->hwndSelf, L"模式必须为 all, replace, ai 或 hotword 之一！", APP_TITLE, MB_OK | MB_ICONWARNING);
+                // Restore original subclass proc and destroy to cancel edit
+                SetWindowLongPtrW(hwndEdit, GWLP_WNDPROC, (LONG_PTR)state->fnOldEditWndProc);
+                DestroyWindow(hwndEdit);
+                return;
+            }
+        }
+
+        // Find the index of the term in state->terms
+        LVITEMW lvi;
+        ZeroMemory(&lvi, sizeof(lvi));
+        lvi.mask = LVIF_PARAM;
+        lvi.iItem = state->edit_row;
+        if (ListView_GetItemW(state->hwndLV, &lvi)) {
+            int term_idx = (int)lvi.lParam;
+            if (term_idx >= 0 && term_idx < state->term_count) {
+                TermItem *item = &state->terms[term_idx];
+                switch (state->edit_col) {
+                    case 1: wcsncpy_s(item->wrong, _countof(item->wrong), text, _TRUNCATE); break;
+                    case 2: wcsncpy_s(item->correct, _countof(item->correct), text, _TRUNCATE); break;
+                    case 3: wcsncpy_s(item->mode, _countof(item->mode), text, _TRUNCATE); break;
+                    case 4: wcsncpy_s(item->aliases, _countof(item->aliases), text, _TRUNCATE); break;
+                    case 5: wcsncpy_s(item->tags, _countof(item->tags), text, _TRUNCATE); break;
+                    case 6: wcsncpy_s(item->notes, _countof(item->notes), text, _TRUNCATE); break;
+                }
+                
+                // Update the text in the ListView cell directly
+                ListView_SetItemTextW(state->hwndLV, state->edit_row, state->edit_col, text);
+            }
+        }
+    }
+
+    // Restore original window proc before destroying (good practice)
+    SetWindowLongPtrW(hwndEdit, GWLP_WNDPROC, (LONG_PTR)state->fnOldEditWndProc);
+    DestroyWindow(hwndEdit);
+}
+
+static void StartCellEdit(TermsEditorState *state, int row, int col) {
+    if (row < 0 || row >= ListView_GetItemCount(state->hwndLV)) return;
+    if (col < 1 || col > 6) return;
+
+    state->edit_row = row;
+    state->edit_col = col;
+
+    RECT rect;
+    // Get the subitem rect. Subitem rect coordinates are relative to the ListView.
+    ListView_GetSubItemRect(state->hwndLV, row, col, LVIR_BOUNDS, &rect);
+
+    // Create the borderless Edit control as a child of the ListView
+    HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    state->hwndCellEdit = CreateWindowExW(0, L"EDIT", L"",
+                                          WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_LEFT,
+                                          rect.left + 2, rect.top + 1, rect.right - rect.left - 4, rect.bottom - rect.top - 2,
+                                          state->hwndLV, (HMENU)(INT_PTR)IDC_TERMS_CELL_EDIT,
+                                          state->app->instance, NULL);
+    if (!state->hwndCellEdit) return;
+
+    apply_font(state->hwndCellEdit, font);
+
+    // Get current text from ListView cell
+    wchar_t cell_text[512] = L"";
+    ListView_GetItemTextW(state->hwndLV, row, col, cell_text, _countof(cell_text));
+    SetWindowTextW(state->hwndCellEdit, cell_text);
+
+    // Subclass the Edit control
+    state->fnOldEditWndProc = (WNDPROC)SetWindowLongPtrW(state->hwndCellEdit, GWLP_WNDPROC, (LONG_PTR)CellEditSubclassProc);
+
+    SetFocus(state->hwndCellEdit);
+    SendMessageW(state->hwndCellEdit, EM_SETSEL, 0, -1);
+}
+
+static LRESULT CALLBACK CellEditSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    HWND hwndTermsEditor = GetParent(GetParent(hwnd));
+    TermsEditorState *state = (TermsEditorState *)GetWindowLongPtrW(hwndTermsEditor, GWLP_USERDATA);
+    if (!state) {
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    switch (msg) {
+    case WM_KEYDOWN:
+        if (wParam == VK_RETURN) {
+            CommitCellEdit(state, TRUE);
+            return 0;
+        }
+        else if (wParam == VK_ESCAPE) {
+            CommitCellEdit(state, FALSE);
+            return 0;
+        }
+        else if (wParam == VK_TAB) {
+            int next_row = state->edit_row;
+            int next_col = state->edit_col;
+            if (GetKeyState(VK_SHIFT) < 0) {
+                // Shift+Tab: move left/up
+                next_col--;
+                if (next_col < 1) {
+                    next_col = 6;
+                    next_row--;
+                    if (next_row < 0) {
+                        next_row = ListView_GetItemCount(state->hwndLV) - 1;
+                    }
+                }
+            } else {
+                // Tab: move right/down
+                next_col++;
+                if (next_col > 6) {
+                    next_col = 1;
+                    next_row++;
+                    if (next_row >= ListView_GetItemCount(state->hwndLV)) {
+                        next_row = 0;
+                    }
+                }
+            }
+            CommitCellEdit(state, TRUE);
+            StartCellEdit(state, next_row, next_col);
+            return 0;
+        }
+        break;
+    case WM_GETDLGCODE:
+        return DLGC_WANTALLKEYS;
+    case WM_KILLFOCUS:
+        CommitCellEdit(state, TRUE);
+        break;
+    }
+
+    return CallWindowProcW(state->fnOldEditWndProc, hwnd, msg, wParam, lParam);
+}
+
+static LRESULT CALLBACK ListViewSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    TermsEditorState *state = (TermsEditorState *)GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA);
+    if (!state) {
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+    if (state->hwndCellEdit) {
+        if (msg == WM_VSCROLL || msg == WM_HSCROLL || msg == WM_MOUSEWHEEL) {
+            CommitCellEdit(state, TRUE);
+        }
+    }
+    return CallWindowProcW(state->fnOldLVWndProc, hwnd, msg, wParam, lParam);
+}
+
+static void LoadTermsFromTsv(TermsEditorState *state) {
+    state->term_count = 0;
+    FILE *fp = NULL;
+    if (_wfopen_s(&fp, state->app->terms_path, L"r, ccs=UTF-8") != 0 || !fp) {
+        // Create default empty terms.tsv with headers
+        if (_wfopen_s(&fp, state->app->terms_path, L"w, ccs=UTF-8") == 0 && fp) {
+            fputws(L"# 启用\t错词\t正词\t同音词/别名(逗号分隔)\t模式(all/replace/ai/hotword)\t标签\t备注\n", fp);
+            fputws(L"1\t地名\t的铭\t\tall\t\t\n", fp);
+            fclose(fp);
+            _wfopen_s(&fp, state->app->terms_path, L"r, ccs=UTF-8");
+        }
+    }
+    if (!fp) return;
+
+    wchar_t line[4096];
+    while (fgetws(line, _countof(line), fp)) {
+        size_t len = wcslen(line);
+        while (len > 0 && (line[len - 1] == L'\r' || line[len - 1] == L'\n')) {
+            line[--len] = L'\0';
+        }
+        if (line[0] == L'\0' || line[0] == L'#') {
+            continue;
+        }
+
+        wchar_t *cols[10] = {0};
+        int col_count = 0;
+        wchar_t *ptr = line;
+        cols[col_count++] = ptr;
+        while (*ptr && col_count < 10) {
+            if (*ptr == L'\t') {
+                *ptr = L'\0';
+                cols[col_count++] = ptr + 1;
+            }
+            ptr++;
+        }
+        if (col_count < 3) continue;
+
+        wchar_t *enabled = cols[0];
+        wchar_t *wrong = cols[1];
+        wchar_t *correct = cols[2];
+        trim_wide_whitespace(enabled);
+        trim_wide_whitespace(wrong);
+        trim_wide_whitespace(correct);
+
+        if (wcscmp(enabled, L"enabled") == 0) continue;
+        if (wrong[0] == L'\0' || correct[0] == L'\0') continue;
+
+        if (state->term_count >= MAX_EDITOR_TERMS) break;
+
+        TermItem *item = &state->terms[state->term_count];
+        item->enabled = (wcscmp(enabled, L"1") == 0);
+        wcsncpy_s(item->wrong, _countof(item->wrong), wrong, _TRUNCATE);
+        wcsncpy_s(item->correct, _countof(item->correct), correct, _TRUNCATE);
+
+        wchar_t *aliases = (col_count > 3) ? cols[3] : L"";
+        wchar_t *mode = (col_count > 4) ? cols[4] : L"all";
+        wchar_t *tags = (col_count > 5) ? cols[5] : L"";
+        wchar_t *notes = (col_count > 6) ? cols[6] : L"";
+        trim_wide_whitespace(aliases);
+        trim_wide_whitespace(mode);
+        trim_wide_whitespace(tags);
+        trim_wide_whitespace(notes);
+
+        wcsncpy_s(item->aliases, _countof(item->aliases), aliases, _TRUNCATE);
+        wcsncpy_s(item->mode, _countof(item->mode), mode, _TRUNCATE);
+        wcsncpy_s(item->tags, _countof(item->tags), tags, _TRUNCATE);
+        wcsncpy_s(item->notes, _countof(item->notes), notes, _TRUNCATE);
+
+        state->term_count++;
+    }
+    fclose(fp);
+}
+
+static void SaveTermsToTsv(TermsEditorState *state) {
+    FILE *fp = NULL;
+    if (_wfopen_s(&fp, state->app->terms_path, L"w, ccs=UTF-8") == 0 && fp) {
+        fputws(L"# 启用\t错词\t正词\t同音词/别名(逗号分隔)\t模式(all/replace/ai/hotword)\t标签\t备注\n", fp);
+        for (int i = 0; i < state->term_count; ++i) {
+            TermItem *item = &state->terms[i];
+            wchar_t line[2048];
+            swprintf_s(line, _countof(line), L"%d\t%ls\t%ls\t%ls\t%ls\t%ls\t%ls\n",
+                       item->enabled ? 1 : 0,
+                       item->wrong,
+                       item->correct,
+                       item->aliases,
+                       item->mode,
+                       item->tags,
+                       item->notes);
+            fputws(line, fp);
+        }
+        fclose(fp);
+    }
+}
+
+static void init_listview_columns(HWND hwndLV) {
+    LVCOLUMNW lvc;
+    ZeroMemory(&lvc, sizeof(lvc));
+    lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+
+    lvc.iSubItem = 0;
+    lvc.pszText = L"启用";
+    lvc.cx = 60;
+    ListView_InsertColumnW(hwndLV, 0, &lvc);
+
+    lvc.iSubItem = 1;
+    lvc.pszText = L"错词";
+    lvc.cx = 120;
+    ListView_InsertColumnW(hwndLV, 1, &lvc);
+
+    lvc.iSubItem = 2;
+    lvc.pszText = L"正词";
+    lvc.cx = 120;
+    ListView_InsertColumnW(hwndLV, 2, &lvc);
+
+    lvc.iSubItem = 3;
+    lvc.pszText = L"模式";
+    lvc.cx = 80;
+    ListView_InsertColumnW(hwndLV, 3, &lvc);
+
+    lvc.iSubItem = 4;
+    lvc.pszText = L"同音词/别名";
+    lvc.cx = 180;
+    ListView_InsertColumnW(hwndLV, 4, &lvc);
+
+    lvc.iSubItem = 5;
+    lvc.pszText = L"标签";
+    lvc.cx = 100;
+    ListView_InsertColumnW(hwndLV, 5, &lvc);
+
+    lvc.iSubItem = 6;
+    lvc.pszText = L"备注";
+    lvc.cx = 160;
+    ListView_InsertColumnW(hwndLV, 6, &lvc);
+}
+
+static void set_listview_check_state(HWND hwndLV, int iItem, BOOL checked) {
+    LVITEMW lvi;
+    ZeroMemory(&lvi, sizeof(lvi));
+    lvi.stateMask = LVIS_STATEIMAGEMASK;
+    lvi.state = INDEXTOSTATEIMAGEMASK(checked ? 2 : 1);
+    SendMessageW(hwndLV, LVM_SETITEMSTATE, (WPARAM)iItem, (LPARAM)&lvi);
+}
+
+static void populate_listview(TermsEditorState *state) {
+    state->is_updating = TRUE;
+    ListView_DeleteAllItems(state->hwndLV);
+    int lv_index = 0;
+    for (int i = 0; i < state->term_count; ++i) {
+        TermItem *item = &state->terms[i];
+        
+        if (state->filter[0] != L'\0') {
+            BOOL match = FALSE;
+            if (wcsstr(item->wrong, state->filter) != NULL ||
+                wcsstr(item->correct, state->filter) != NULL ||
+                wcsstr(item->aliases, state->filter) != NULL ||
+                wcsstr(item->tags, state->filter) != NULL ||
+                wcsstr(item->notes, state->filter) != NULL) {
+                match = TRUE;
+            }
+            if (!match) continue;
+        }
+
+        LVITEMW lvi;
+        ZeroMemory(&lvi, sizeof(lvi));
+        lvi.mask = LVIF_TEXT | LVIF_PARAM;
+        lvi.iItem = lv_index;
+        lvi.iSubItem = 0;
+        lvi.pszText = L"";
+        lvi.lParam = (LPARAM)i;
+
+        ListView_InsertItemW(state->hwndLV, &lvi);
+        ListView_SetItemTextW(state->hwndLV, lv_index, 1, item->wrong);
+        ListView_SetItemTextW(state->hwndLV, lv_index, 2, item->correct);
+        ListView_SetItemTextW(state->hwndLV, lv_index, 3, item->mode);
+        ListView_SetItemTextW(state->hwndLV, lv_index, 4, item->aliases);
+        ListView_SetItemTextW(state->hwndLV, lv_index, 5, item->tags);
+        ListView_SetItemTextW(state->hwndLV, lv_index, 6, item->notes);
+
+        set_listview_check_state(state->hwndLV, lv_index, item->enabled);
+
+        lv_index++;
+    }
+    state->is_updating = FALSE;
+}
+
+static void check_terms_conflicts(HWND hwndParent, TermItem *terms, int count) {
+    wchar_t report[4096] = L"冲突与格式检查报告：\n\n";
+    int duplicates = 0;
+    int circles = 0;
+    int chains = 0;
+    int errors_logged = 0;
+
+    for (int i = 0; i < count; ++i) {
+        if (!terms[i].enabled) continue;
+        for (int j = i + 1; j < count; ++j) {
+            if (!terms[j].enabled) continue;
+            if (_wcsicmp(terms[i].wrong, terms[j].wrong) == 0 && _wcsicmp(terms[i].correct, terms[j].correct) != 0) {
+                if (errors_logged < 10) {
+                    wchar_t line[512];
+                    swprintf_s(line, _countof(line), L"• 映射冲突: 错词 [%ls] 分别被映射到 [%ls] 和 [%ls]\n", terms[i].wrong, terms[i].correct, terms[j].correct);
+                    wcscat_s(report, _countof(report), line);
+                }
+                duplicates++;
+                errors_logged++;
+            }
+        }
+    }
+
+    for (int i = 0; i < count; ++i) {
+        if (!terms[i].enabled) continue;
+        for (int j = 0; j < count; ++j) {
+            if (!terms[j].enabled || i == j) continue;
+            if (_wcsicmp(terms[i].correct, terms[j].wrong) == 0 && _wcsicmp(terms[j].correct, terms[i].wrong) == 0) {
+                if (errors_logged < 10) {
+                    wchar_t line[512];
+                    swprintf_s(line, _countof(line), L"• 循环引用: [%ls] -> [%ls] 且 [%ls] -> [%ls]\n", terms[i].wrong, terms[i].correct, terms[j].wrong, terms[j].correct);
+                    wcscat_s(report, _countof(report), line);
+                }
+                circles++;
+                errors_logged++;
+            }
+        }
+    }
+
+    for (int i = 0; i < count; ++i) {
+        if (!terms[i].enabled) continue;
+        for (int j = 0; j < count; ++j) {
+            if (!terms[j].enabled || i == j) continue;
+            if (_wcsicmp(terms[i].correct, terms[j].wrong) == 0) {
+                if (_wcsicmp(terms[i].wrong, terms[j].correct) != 0) {
+                    if (errors_logged < 10) {
+                        wchar_t line[512];
+                        swprintf_s(line, _countof(line), L"• 链式依赖: [%ls] -> [%ls] -> [%ls] (建议合并为 [%ls] -> [%ls])\n", 
+                                  terms[i].wrong, terms[i].correct, terms[j].correct, terms[i].wrong, terms[j].correct);
+                        wcscat_s(report, _countof(report), line);
+                    }
+                    chains++;
+                    errors_logged++;
+                }
+            }
+        }
+    }
+
+    if (errors_logged == 0) {
+        MessageBoxW(hwndParent, L"自检通过！未发现词库中的冲突（无映射冲突、循环引用或链式依赖）。", APP_TITLE, MB_OK | MB_ICONINFORMATION);
+    } else {
+        wchar_t summary[512];
+        swprintf_s(summary, _countof(summary), L"\n检查完成。共发现 %d 处冲突/建议 (映射冲突: %d, 循环引用: %d, 链式依赖: %d)。", 
+                  errors_logged, duplicates, circles, chains);
+        wcscat_s(report, _countof(report), summary);
+        MessageBoxW(hwndParent, report, APP_TITLE, MB_OK | MB_ICONWARNING);
+    }
+}
+
+static void import_terms_from_file(TermsEditorState *state) {
+    OPENFILENAMEW ofn;
+    wchar_t file_path[MAX_PATH] = L"";
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = state->hwndSelf;
+    ofn.lpstrFilter = L"术语文件 (*.tsv;*.txt)\0*.tsv;*.txt\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFile = file_path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    
+    if (GetOpenFileNameW(&ofn)) {
+        FILE *fp = NULL;
+        if (_wfopen_s(&fp, file_path, L"r, ccs=UTF-8") == 0 && fp) {
+            wchar_t line[4096];
+            int imported = 0;
+            int choice = MessageBoxW(state->hwndSelf, L"是否清空现有术语并替换？点击“是”清空并导入，点击“否”追加导入，点击“取消”中止操作。", APP_TITLE, MB_YESNOCANCEL | MB_ICONQUESTION);
+            if (choice == IDCANCEL) {
+                fclose(fp);
+                return;
+            }
+            if (choice == IDYES) {
+                state->term_count = 0;
+            }
+            
+            while (fgetws(line, _countof(line), fp)) {
+                size_t len = wcslen(line);
+                while (len > 0 && (line[len - 1] == L'\r' || line[len - 1] == L'\n')) {
+                    line[--len] = L'\0';
+                }
+                if (line[0] == L'\0' || line[0] == L'#') {
+                    continue;
+                }
+                wchar_t *cols[10] = {0};
+                int col_count = 0;
+                wchar_t *ptr = line;
+                cols[col_count++] = ptr;
+                while (*ptr && col_count < 10) {
+                    if (*ptr == L'\t') {
+                        *ptr = L'\0';
+                        cols[col_count++] = ptr + 1;
+                    }
+                    ptr++;
+                }
+                if (col_count < 3) continue;
+                
+                wchar_t *enabled = cols[0];
+                wchar_t *wrong = cols[1];
+                wchar_t *correct = cols[2];
+                trim_wide_whitespace(enabled);
+                trim_wide_whitespace(wrong);
+                trim_wide_whitespace(correct);
+                
+                if (wcscmp(enabled, L"enabled") == 0) continue;
+                if (wrong[0] == L'\0' || correct[0] == L'\0') continue;
+                
+                if (state->term_count >= MAX_EDITOR_TERMS) break;
+                
+                TermItem *item = &state->terms[state->term_count];
+                item->enabled = (wcscmp(enabled, L"1") == 0);
+                wcsncpy_s(item->wrong, _countof(item->wrong), wrong, _TRUNCATE);
+                wcsncpy_s(item->correct, _countof(item->correct), correct, _TRUNCATE);
+                
+                wchar_t *aliases = (col_count > 3) ? cols[3] : L"";
+                wchar_t *mode = (col_count > 4) ? cols[4] : L"all";
+                wchar_t *tags = (col_count > 5) ? cols[5] : L"";
+                wchar_t *notes = (col_count > 6) ? cols[6] : L"";
+                trim_wide_whitespace(aliases);
+                trim_wide_whitespace(mode);
+                trim_wide_whitespace(tags);
+                trim_wide_whitespace(notes);
+                
+                wcsncpy_s(item->aliases, _countof(item->aliases), aliases, _TRUNCATE);
+                wcsncpy_s(item->mode, _countof(item->mode), mode, _TRUNCATE);
+                wcsncpy_s(item->tags, _countof(item->tags), tags, _TRUNCATE);
+                wcsncpy_s(item->notes, _countof(item->notes), notes, _TRUNCATE);
+                
+                state->term_count++;
+                imported++;
+            }
+            fclose(fp);
+            
+            populate_listview(state);
+            wchar_t msg[256];
+            swprintf_s(msg, _countof(msg), L"成功导入 %d 条术语！", imported);
+            MessageBoxW(state->hwndSelf, msg, APP_TITLE, MB_OK | MB_ICONINFORMATION);
+        } else {
+            MessageBoxW(state->hwndSelf, L"无法打开选中的文件。", APP_TITLE, MB_ICONERROR);
+        }
+    }
+}
+
+static void export_terms_to_file(TermsEditorState *state) {
+    OPENFILENAMEW ofn;
+    wchar_t file_path[MAX_PATH] = L"terms_export.tsv";
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = state->hwndSelf;
+    ofn.lpstrFilter = L"术语文件 (*.tsv)\0*.tsv\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFile = file_path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY;
+    ofn.lpstrDefExt = L"tsv";
+    
+    if (GetSaveFileNameW(&ofn)) {
+        FILE *fp = NULL;
+        if (_wfopen_s(&fp, file_path, L"w, ccs=UTF-8") == 0 && fp) {
+            fputws(L"# 启用\t错词\t正词\t同音词/别名(逗号分隔)\t模式(all/replace/ai/hotword)\t标签\t备注\n", fp);
+            int exported = 0;
+            for (int i = 0; i < state->term_count; ++i) {
+                TermItem *item = &state->terms[i];
+                wchar_t line[2048];
+                swprintf_s(line, _countof(line), L"%d\t%ls\t%ls\t%ls\t%ls\t%ls\t%ls\n",
+                           item->enabled ? 1 : 0,
+                           item->wrong,
+                           item->correct,
+                           item->aliases,
+                           item->mode,
+                           item->tags,
+                           item->notes);
+                fputws(line, fp);
+                exported++;
+            }
+            fclose(fp);
+            wchar_t msg[256];
+            swprintf_s(msg, _countof(msg), L"成功导出 %d 条术语！", exported);
+            MessageBoxW(state->hwndSelf, msg, APP_TITLE, MB_OK | MB_ICONINFORMATION);
+        } else {
+            MessageBoxW(state->hwndSelf, L"无法写入选中的文件。", APP_TITLE, MB_ICONERROR);
+        }
+    }
+}
+
+static LRESULT CALLBACK TermsEditorWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    TermsEditorState *state = (TermsEditorState *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    if (!state && msg != WM_NCCREATE) {
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    switch (msg) {
+    case WM_NCCREATE: {
+        CREATESTRUCTW *create = (CREATESTRUCTW *)lParam;
+        AppState *app = (AppState *)create->lpCreateParams;
+        state = (TermsEditorState *)calloc(1, sizeof(TermsEditorState));
+        if (!state) return FALSE;
+        state->app = app;
+        state->hwndSelf = hwnd;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)state);
+        return TRUE;
+    }
+    case WM_CREATE: {
+        HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        
+        INITCOMMONCONTROLSEX iccex;
+        iccex.dwSize = sizeof(iccex);
+        iccex.dwICC = ICC_LISTVIEW_CLASSES;
+        InitCommonControlsEx(&iccex);
+
+        // Search panel
+        HWND label = CreateWindowW(L"STATIC", L"搜索术语：", WS_CHILD | WS_VISIBLE, 20, 18, 80, 20, hwnd, NULL, state->app->instance, NULL);
+        apply_font(label, font);
+
+        state->hwndSearch = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 100, 15, 300, 24, hwnd, (HMENU)(INT_PTR)IDC_TERMS_SEARCH_EDIT, state->app->instance, NULL);
+        apply_font(state->hwndSearch, font);
+
+        // List view - Expanded to 480 height and LVS_SINGLESEL removed to allow multi-selection
+        state->hwndLV = CreateWindowExW(0, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS, 20, 55, 865, 480, hwnd, (HMENU)(INT_PTR)IDC_TERMS_LISTVIEW, state->app->instance, NULL);
+        apply_font(state->hwndLV, font);
+        ListView_SetExtendedListViewStyle(state->hwndLV, LVS_EX_GRIDLINES | LVS_EX_FULLROWSELECT | LVS_EX_CHECKBOXES);
+        init_listview_columns(state->hwndLV);
+
+        // Subclass the ListView control to handle scroll events
+        state->fnOldLVWndProc = (WNDPROC)SetWindowLongPtrW(state->hwndLV, GWLP_WNDPROC, (LONG_PTR)ListViewSubclassProc);
+
+        // Bottom buttons row 1 (Y = 555)
+        HWND btn_add = CreateWindowW(L"BUTTON", L"新增行", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 20, 555, 80, 28, hwnd, (HMENU)(INT_PTR)IDC_TERMS_BTN_ADD, state->app->instance, NULL);
+        apply_font(btn_add, font);
+
+        HWND btn_del = CreateWindowW(L"BUTTON", L"删除选中", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 110, 555, 80, 28, hwnd, (HMENU)(INT_PTR)IDC_TERMS_BTN_DELETE, state->app->instance, NULL);
+        apply_font(btn_del, font);
+
+        HWND btn_selall = CreateWindowW(L"BUTTON", L"全选", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 200, 555, 60, 28, hwnd, (HMENU)(INT_PTR)IDC_TERMS_BTN_SELECT_ALL, state->app->instance, NULL);
+        apply_font(btn_selall, font);
+
+        HWND btn_invsel = CreateWindowW(L"BUTTON", L"反选", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 270, 555, 60, 28, hwnd, (HMENU)(INT_PTR)IDC_TERMS_BTN_INVERT_SEL, state->app->instance, NULL);
+        apply_font(btn_invsel, font);
+
+        HWND btn_enable = CreateWindowW(L"BUTTON", L"批量启用", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 340, 555, 80, 28, hwnd, (HMENU)(INT_PTR)IDC_TERMS_BTN_BATCH_ENABLE, state->app->instance, NULL);
+        apply_font(btn_enable, font);
+
+        HWND btn_disable = CreateWindowW(L"BUTTON", L"批量停用", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 430, 555, 80, 28, hwnd, (HMENU)(INT_PTR)IDC_TERMS_BTN_BATCH_DISABLE, state->app->instance, NULL);
+        apply_font(btn_disable, font);
+
+        HWND btn_check = CreateWindowW(L"BUTTON", L"冲突检查", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 520, 555, 80, 28, hwnd, (HMENU)(INT_PTR)IDC_TERMS_BTN_CHECK, state->app->instance, NULL);
+        apply_font(btn_check, font);
+
+        HWND btn_import = CreateWindowW(L"BUTTON", L"导入 TSV", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 610, 555, 80, 28, hwnd, (HMENU)(INT_PTR)IDC_TERMS_BTN_IMPORT, state->app->instance, NULL);
+        apply_font(btn_import, font);
+
+        HWND btn_export = CreateWindowW(L"BUTTON", L"导出 TSV", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 700, 555, 80, 28, hwnd, (HMENU)(INT_PTR)IDC_TERMS_BTN_EXPORT, state->app->instance, NULL);
+        apply_font(btn_export, font);
+
+        // Bottom buttons row 2 (Y = 600)
+        HWND save_btn = CreateWindowW(L"BUTTON", L"保存修改", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 540, 600, 160, 30, hwnd, (HMENU)(INT_PTR)IDC_TERMS_BTN_SAVE, state->app->instance, NULL);
+        apply_font(save_btn, font);
+
+        HWND cancel_btn = CreateWindowW(L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 720, 600, 160, 30, hwnd, (HMENU)(INT_PTR)IDC_TERMS_BTN_CANCEL, state->app->instance, NULL);
+        apply_font(cancel_btn, font);
+
+        LoadTermsFromTsv(state);
+        populate_listview(state);
+        return 0;
+    }
+    case WM_COMMAND: {
+        if (LOWORD(wParam) == IDC_TERMS_SEARCH_EDIT && HIWORD(wParam) == EN_CHANGE) {
+            GetWindowTextW(state->hwndSearch, state->filter, _countof(state->filter));
+            trim_wide_whitespace(state->filter);
+            populate_listview(state);
+            return 0;
+        }
+
+        switch (LOWORD(wParam)) {
+        case IDC_TERMS_BTN_ADD: {
+            if (state->term_count >= MAX_EDITOR_TERMS) {
+                MessageBoxW(hwnd, L"术语库数量已达最大限制！", APP_TITLE, MB_OK | MB_ICONWARNING);
+                return 0;
+            }
+
+            TermItem *item = &state->terms[state->term_count];
+            item->enabled = TRUE;
+            wcsncpy_s(item->wrong, _countof(item->wrong), L"新词", _TRUNCATE);
+            wcsncpy_s(item->correct, _countof(item->correct), L"替换词", _TRUNCATE);
+            wcsncpy_s(item->mode, _countof(item->mode), L"all", _TRUNCATE);
+            wcsncpy_s(item->aliases, _countof(item->aliases), L"", _TRUNCATE);
+            wcsncpy_s(item->tags, _countof(item->tags), L"", _TRUNCATE);
+            wcsncpy_s(item->notes, _countof(item->notes), L"", _TRUNCATE);
+
+            state->term_count++;
+            populate_listview(state);
+
+            int new_lv_index = -1;
+            int count = ListView_GetItemCount(state->hwndLV);
+            for (int i = 0; i < count; i++) {
+                LVITEMW lvi;
+                ZeroMemory(&lvi, sizeof(lvi));
+                lvi.mask = LVIF_PARAM;
+                lvi.iItem = i;
+                if (ListView_GetItemW(state->hwndLV, &lvi) && (int)lvi.lParam == state->term_count - 1) {
+                    new_lv_index = i;
+                    break;
+                }
+            }
+
+            if (new_lv_index != -1) {
+                int total_items = ListView_GetItemCount(state->hwndLV);
+                for (int i = 0; i < total_items; i++) {
+                    ListView_SetItemState(state->hwndLV, i, 0, LVIS_SELECTED);
+                }
+                ListView_SetItemState(state->hwndLV, new_lv_index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                ListView_EnsureVisible(state->hwndLV, new_lv_index, FALSE);
+
+                StartCellEdit(state, new_lv_index, 1);
+            }
+            return 0;
+        }
+
+        case IDC_TERMS_BTN_DELETE: {
+            int selected_count = ListView_GetSelectedCount(state->hwndLV);
+            if (selected_count == 0) {
+                MessageBoxW(hwnd, L"请先在列表中选择要删除的行（支持按住 Ctrl/Shift 多选）！", APP_TITLE, MB_OK | MB_ICONWARNING);
+                return 0;
+            }
+
+            if (MessageBoxW(hwnd, L"确定要删除选中的所有术语吗？此操作无法撤销。", APP_TITLE, MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                BOOL *to_delete = (BOOL *)calloc(state->term_count, sizeof(BOOL));
+                if (!to_delete) return 0;
+
+                int lv_count = ListView_GetItemCount(state->hwndLV);
+                for (int i = 0; i < lv_count; i++) {
+                    if (ListView_GetItemState(state->hwndLV, i, LVIS_SELECTED) & LVIS_SELECTED) {
+                        LVITEMW lvi;
+                        ZeroMemory(&lvi, sizeof(lvi));
+                        lvi.mask = LVIF_PARAM;
+                        lvi.iItem = i;
+                        if (ListView_GetItemW(state->hwndLV, &lvi)) {
+                            int term_idx = (int)lvi.lParam;
+                            if (term_idx >= 0 && term_idx < state->term_count) {
+                                to_delete[term_idx] = TRUE;
+                            }
+                        }
+                    }
+                }
+
+                // Compress the state->terms array
+                int new_count = 0;
+                for (int i = 0; i < state->term_count; i++) {
+                    if (!to_delete[i]) {
+                        state->terms[new_count++] = state->terms[i];
+                    }
+                }
+                state->term_count = new_count;
+                free(to_delete);
+
+                populate_listview(state);
+            }
+            return 0;
+        }
+
+        case IDC_TERMS_BTN_SELECT_ALL: {
+            int count = ListView_GetItemCount(state->hwndLV);
+            for (int i = 0; i < count; i++) {
+                ListView_SetItemState(state->hwndLV, i, LVIS_SELECTED, LVIS_SELECTED);
+            }
+            SetFocus(state->hwndLV);
+            return 0;
+        }
+
+        case IDC_TERMS_BTN_INVERT_SEL: {
+            int count = ListView_GetItemCount(state->hwndLV);
+            for (int i = 0; i < count; i++) {
+                UINT current_state = ListView_GetItemState(state->hwndLV, i, LVIS_SELECTED);
+                UINT new_state = (current_state & LVIS_SELECTED) ? 0 : LVIS_SELECTED;
+                ListView_SetItemState(state->hwndLV, i, new_state, LVIS_SELECTED);
+            }
+            SetFocus(state->hwndLV);
+            return 0;
+        }
+
+        case IDC_TERMS_BTN_BATCH_ENABLE:
+        case IDC_TERMS_BTN_BATCH_DISABLE: {
+            BOOL enable = (LOWORD(wParam) == IDC_TERMS_BTN_BATCH_ENABLE);
+            int lv_count = ListView_GetItemCount(state->hwndLV);
+            if (lv_count == 0) return 0;
+
+            // Save selection based on term index (lParam)
+            BOOL *selected_indices = (BOOL *)calloc(state->term_count, sizeof(BOOL));
+            if (!selected_indices) return 0;
+
+            int updated = 0;
+            for (int i = 0; i < lv_count; i++) {
+                if (ListView_GetItemState(state->hwndLV, i, LVIS_SELECTED) & LVIS_SELECTED) {
+                    LVITEMW lvi;
+                    ZeroMemory(&lvi, sizeof(lvi));
+                    lvi.mask = LVIF_PARAM;
+                    lvi.iItem = i;
+                    if (ListView_GetItemW(state->hwndLV, &lvi)) {
+                        int term_idx = (int)lvi.lParam;
+                        if (term_idx >= 0 && term_idx < state->term_count) {
+                            state->terms[term_idx].enabled = enable;
+                            selected_indices[term_idx] = TRUE;
+                            updated++;
+                        }
+                    }
+                }
+            }
+            if (updated > 0) {
+                populate_listview(state);
+
+                // Restore selection and keep blue highlights
+                int new_lv_count = ListView_GetItemCount(state->hwndLV);
+                for (int i = 0; i < new_lv_count; i++) {
+                    LVITEMW lvi;
+                    ZeroMemory(&lvi, sizeof(lvi));
+                    lvi.mask = LVIF_PARAM;
+                    lvi.iItem = i;
+                    if (ListView_GetItemW(state->hwndLV, &lvi)) {
+                        int term_idx = (int)lvi.lParam;
+                        if (term_idx >= 0 && term_idx < state->term_count && selected_indices[term_idx]) {
+                            ListView_SetItemState(state->hwndLV, i, LVIS_SELECTED, LVIS_SELECTED);
+                        }
+                    }
+                }
+                SetFocus(state->hwndLV);
+            } else {
+                MessageBoxW(hwnd, L"请先在列表中选择要操作的行！", APP_TITLE, MB_OK | MB_ICONWARNING);
+            }
+            free(selected_indices);
+            return 0;
+        }
+
+        case IDC_TERMS_BTN_CHECK:
+            CommitCellEdit(state, TRUE);
+            check_terms_conflicts(hwnd, state->terms, state->term_count);
+            return 0;
+
+        case IDC_TERMS_BTN_IMPORT:
+            import_terms_from_file(state);
+            return 0;
+
+        case IDC_TERMS_BTN_EXPORT:
+            CommitCellEdit(state, TRUE);
+            export_terms_to_file(state);
+            return 0;
+
+        case IDC_TERMS_BTN_SAVE:
+            CommitCellEdit(state, TRUE);
+            SaveTermsToTsv(state);
+            reload_terms_library(state->app, TRUE, TRUE);
+            DestroyWindow(hwnd);
+            return 0;
+
+        case IDC_TERMS_BTN_CANCEL:
+            CommitCellEdit(state, FALSE);
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+    }
+    case WM_NOTIFY: {
+        LPNMHDR nmhdr = (LPNMHDR)lParam;
+        if (nmhdr->idFrom == IDC_TERMS_LISTVIEW) {
+            if (nmhdr->code == LVN_ITEMCHANGED) {
+                LPNMLISTVIEW nmlv = (LPNMLISTVIEW)lParam;
+                // Checkbox toggled
+                if ((nmlv->uChanged & LVIF_STATE) && (nmlv->uNewState & LVIS_STATEIMAGEMASK) != (nmlv->uOldState & LVIS_STATEIMAGEMASK)) {
+                    if (state->is_updating) break;
+                    BOOL checked = (((nmlv->uNewState & LVIS_STATEIMAGEMASK) >> 12) == 2);
+                    LVITEMW lvi;
+                    ZeroMemory(&lvi, sizeof(lvi));
+                    lvi.mask = LVIF_PARAM;
+                    lvi.iItem = nmlv->iItem;
+                    if (ListView_GetItemW(state->hwndLV, &lvi)) {
+                        int term_idx = (int)lvi.lParam;
+                        if (term_idx >= 0 && term_idx < state->term_count) {
+                            state->terms[term_idx].enabled = checked;
+                        }
+                    }
+                }
+            }
+            else if (nmhdr->code == NM_DBLCLK) {
+                LPNMITEMACTIVATE nmia = (LPNMITEMACTIVATE)lParam;
+                if (nmia->iItem != -1 && nmia->iSubItem >= 1) {
+                    StartCellEdit(state, nmia->iItem, nmia->iSubItem);
+                }
+            }
+        }
+        break;
+    }
+    case WM_DESTROY:
+        CommitCellEdit(state, FALSE);
+        if (state->hwndLV && state->fnOldLVWndProc) {
+            SetWindowLongPtrW(state->hwndLV, GWLP_WNDPROC, (LONG_PTR)state->fnOldLVWndProc);
+        }
+        state->app->terms_editor_hwnd = NULL;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        free(state);
+        break;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }

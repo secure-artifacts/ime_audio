@@ -16,7 +16,7 @@ target_compile_definitions(voice_ime PRIVATE _CRT_SECURE_NO_WARNINGS _WIN32_WINN
 if (MSVC)
     target_compile_options(voice_ime PRIVATE /utf-8)
 endif()
-target_link_libraries(voice_ime PRIVATE winmm winhttp user32 shell32 ole32 oleaut32)
+target_link_libraries(voice_ime PRIVATE winmm winhttp user32 shell32 ole32 oleaut32 comctl32)
 
 if(MINGW)
     target_link_options(voice_ime PRIVATE -municode)

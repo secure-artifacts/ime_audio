@@ -1,0 +1,5 @@
+# Voice IME 统一术语库。保存后在程序里点“重载词库”。
+# enabled	wrong	correct	aliases	mode	tags	note
+# mode 可填 all、ai、replace、hotword，多个用逗号分隔。
+# 例：1	杰米尼	Gemini	吉米尼,gemini	all	AI	品牌/模型名
+enabled	wrong	correct	aliases	mode	tags	note

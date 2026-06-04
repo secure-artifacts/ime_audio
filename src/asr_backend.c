@@ -345,7 +345,6 @@ static char *extract_json_text_field(const char *line) {
         free(out);
         return NULL;
     }
-
     return out;
 }
 
@@ -354,6 +353,7 @@ static char *extract_text_from_output(const char *output) {
     char *line = NULL;
     char *save_ptr = NULL;
     char *best = NULL;
+    BOOL is_json_response = FALSE;
 
     if (!output || output[0] == '\0') {
         return NULL;
@@ -380,6 +380,16 @@ static char *extract_text_from_output(const char *output) {
         if (json_text) {
             free(best);
             best = json_text;
+            is_json_response = TRUE;
+            line = strtok_s(NULL, "\r\n", &save_ptr);
+            continue;
+        }
+
+        // Check if this line is a JSON response line but with empty text
+        if (candidate[0] == '{' && strstr(candidate, "\"text\"") != NULL) {
+            is_json_response = TRUE;
+            free(best);
+            best = _strdup("");
             line = strtok_s(NULL, "\r\n", &save_ptr);
             continue;
         }
@@ -415,9 +425,20 @@ static char *extract_text_from_output(const char *output) {
     free(copy);
     if (best) {
         trim_ascii_whitespace(best);
-        if (best[0] == '\0' || !seems_transcription_text(best)) {
-            free(best);
-            best = NULL;
+        if (best[0] == '\0') {
+            if (is_json_response) {
+                // Keep the empty string for JSON response to indicate successful empty recognition
+            } else {
+                free(best);
+                best = NULL;
+            }
+        } else if (!seems_transcription_text(best)) {
+            if (is_json_response) {
+                // Keep it anyway
+            } else {
+                free(best);
+                best = NULL;
+            }
         }
     }
 
@@ -915,8 +936,21 @@ BOOL sherpa_transcribe_wav_websocket(const wchar_t *wav_path,
     if (response_len > 0) {
         *out_utf8_text = extract_json_text_field(response_buffer);
         if (!*out_utf8_text) {
-            *out_utf8_text = response_buffer;
-            response_buffer = NULL;
+            // If the response is a JSON object but we couldn't extract text, return empty string instead of raw JSON
+            char *trimmed = _strdup(response_buffer);
+            if (trimmed) {
+                trim_ascii_whitespace(trimmed);
+                if (trimmed[0] == '{' && strstr(trimmed, "\"text\"") != NULL) {
+                    *out_utf8_text = _strdup("");
+                } else {
+                    *out_utf8_text = response_buffer;
+                    response_buffer = NULL;
+                }
+                free(trimmed);
+            } else {
+                *out_utf8_text = response_buffer;
+                response_buffer = NULL;
+            }
         }
         ok = TRUE;
     } else {
@@ -1180,18 +1214,18 @@ static char *build_openai_chat_payload(const char *input_text,
         sprintf_s(lang_instruction, sizeof(lang_instruction), "并将最终结果翻译为「%s」（如果是中文请用对应的繁简体）。", target_lang);
     }
 
-    char dict_instruction[2048] = "";
+    char dict_instruction[8192] = "";
     if (replace_rules && strlen(replace_rules) > 0) {
-        sprintf_s(dict_instruction, sizeof(dict_instruction), 
-                  "\n纠错词典（将谐音错字更正为）：\n%s\n", 
-                  replace_rules);
+        _snprintf_s(dict_instruction, sizeof(dict_instruction), _TRUNCATE,
+                    "\n纠错词典（将谐音错字更正为）：\n%s\n",
+                    replace_rules);
     }
 
-    char vocab_instruction[2048] = "";
+    char vocab_instruction[8192] = "";
     if (ai_vocab && strlen(ai_vocab) > 0) {
-        sprintf_s(vocab_instruction, sizeof(vocab_instruction), 
-                  "\n【专有名词与自订词库（若原始文字中听起来相近，请优先使用且纠正为此处的写法）】:\n%s\n", 
-                  ai_vocab);
+        _snprintf_s(vocab_instruction, sizeof(vocab_instruction), _TRUNCATE,
+                    "\n【专有名词与自订词库（若原始文字中听起来相近，请优先使用且纠正为此处的写法）】:\n%s\n",
+                    ai_vocab);
     }
 
     char custom_instruction[1024] = "";
@@ -1334,18 +1368,18 @@ static char *build_polish_prompt(const char *input_text,
         sprintf_s(lang_instruction, sizeof(lang_instruction), "并将最终结果翻译为「%s」（如果是中文请用对应的繁简体）。", target_lang);
     }
 
-    char dict_instruction[2048] = "";
+    char dict_instruction[8192] = "";
     if (replace_rules && strlen(replace_rules) > 0) {
-        sprintf_s(dict_instruction, sizeof(dict_instruction), 
-                  "\n【专有名词与字词拼写参考（若语音中听起来相近，请优先使用以下写法）】:\n%s\n", 
-                  replace_rules);
+        _snprintf_s(dict_instruction, sizeof(dict_instruction), _TRUNCATE,
+                    "\n【专有名词与字词拼写参考（若语音中听起来相近，请优先使用以下写法）】:\n%s\n",
+                    replace_rules);
     }
 
-    char vocab_instruction[2048] = "";
+    char vocab_instruction[8192] = "";
     if (ai_vocab && strlen(ai_vocab) > 0) {
-        sprintf_s(vocab_instruction, sizeof(vocab_instruction), 
-                  "\n【专有名词与自订词库（若原始文字中听起来相近，请优先使用且纠正为此处的写法）】:\n%s\n", 
-                  ai_vocab);
+        _snprintf_s(vocab_instruction, sizeof(vocab_instruction), _TRUNCATE,
+                    "\n【专有名词与自订词库（若原始文字中听起来相近，请优先使用且纠正为此处的写法）】:\n%s\n",
+                    ai_vocab);
     }
 
     char custom_instruction[1024] = "";
@@ -1418,18 +1452,18 @@ static char *build_transcribe_prompt(const char *target_lang,
         sprintf_s(lang_instruction, sizeof(lang_instruction), "并将结果翻译为「%s」。", target_lang);
     }
 
-    char dict_instruction[2048] = "";
+    char dict_instruction[8192] = "";
     if (replace_rules && strlen(replace_rules) > 0) {
-        sprintf_s(dict_instruction, sizeof(dict_instruction), 
-                  "\n【专有名词与字词拼写参考（若语音中发音相近，请优先使用以下写法）】:\n%s\n", 
-                  replace_rules);
+        _snprintf_s(dict_instruction, sizeof(dict_instruction), _TRUNCATE,
+                    "\n【专有名词与字词拼写参考（若语音中发音相近，请优先使用以下写法）】:\n%s\n",
+                    replace_rules);
     }
 
-    char vocab_instruction[2048] = "";
+    char vocab_instruction[8192] = "";
     if (ai_vocab && strlen(ai_vocab) > 0) {
-        sprintf_s(vocab_instruction, sizeof(vocab_instruction), 
-                  "\n【专有名词与自订词库（若原始文字中听起来相近，请优先使用且纠正为此处的写法）】:\n%s\n", 
-                  ai_vocab);
+        _snprintf_s(vocab_instruction, sizeof(vocab_instruction), _TRUNCATE,
+                    "\n【专有名词与自订词库（若原始文字中听起来相近，请优先使用且纠正为此处的写法）】:\n%s\n",
+                    ai_vocab);
     }
 
     char custom_instruction[1024] = "";
