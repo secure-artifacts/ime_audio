@@ -1,0 +1,72 @@
+name: Bug report
+description: Report a reproducible VoiceIME problem
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve VoiceIME. Do not include API keys, private audio, sensitive transcriptions, or unredacted configuration and logs. Security vulnerabilities must be reported through SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: VoiceIME version
+      placeholder: v1.0.41
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Recognition backend
+      options:
+        - Gemini Native Audio
+        - Groq
+        - Gladia
+        - Sherpa-onnx / local
+        - OpenAI-compatible custom endpoint
+        - Not backend-specific
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem description
+      description: Explain what happened and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Start VoiceIME...
+        2. Select...
+        3. Press...
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics
+      description: Share only the minimum relevant log or configuration excerpt after removing credentials, private text, audio, usernames, and local paths.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I tested the latest release or confirmed that the problem still applies to it.
+          required: true
+        - label: I removed API keys, private audio, personal text, and other sensitive data.
+          required: true
+        - label: This is not a security vulnerability requiring private disclosure.
+          required: true

@@ -1,3 +1,30 @@
+# VoiceIME — Windows-wide voice input
+
+[![Latest release](https://img.shields.io/github/v/release/secure-artifacts/ime_audio?display_name=tag)](https://github.com/secure-artifacts/ime_audio/releases/latest)
+[![Release downloads](https://img.shields.io/github/downloads/secure-artifacts/ime_audio/total)](https://github.com/secure-artifacts/ime_audio/releases)
+[![Release build](https://github.com/secure-artifacts/ime_audio/actions/workflows/release.yml/badge.svg)](https://github.com/secure-artifacts/ime_audio/actions/workflows/release.yml)
+[![CodeQL](https://github.com/secure-artifacts/ime_audio/actions/workflows/codeql.yml/badge.svg)](https://github.com/secure-artifacts/ime_audio/actions/workflows/codeql.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+VoiceIME is an open-source Windows 10/11 desktop utility that turns speech into text in any application. It combines a native C/Win32 interface with interchangeable cloud and fully offline speech-recognition backends, global hotkeys, multilingual text processing, and a reusable terminology library.
+
+## Why VoiceIME?
+
+- **Works across Windows applications:** start recording with a global hotkey and insert the result at the active text cursor.
+- **Cloud or local processing:** use Gemini, Groq, Gladia, an OpenAI-compatible endpoint, or offline Sherpa-onnx models.
+- **Privacy choice:** keep audio local with an offline backend, or select the cloud provider that fits your requirements.
+- **Accessible and customizable:** configure voice activity detection, continuous dictation, translation, writing style, and domain terminology.
+- **Auditable releases:** tagged builds run in GitHub Actions and publish build-provenance attestations for the installer.
+
+Download the [latest release](https://github.com/secure-artifacts/ime_audio/releases/latest), read the [security policy](SECURITY.md), or see [how to contribute](CONTRIBUTING.md).
+
+> [!IMPORTANT]
+> Cloud backends require credentials from their respective providers. Never include API keys, private audio, configuration files, or sensitive logs in an issue or pull request.
+
+---
+
+<a id="中文说明"></a>
+
 # Windows 语音输入法 (C + Win32 GUI)
 
 这是一个可后台运行的 Windows 全局语音输入工具，旨在提供极速、高准确率、无缝衔接的桌面语音转文字体验。支持云端（Groq / Gemini / Gladia）与本地（Sherpa-onnx）多种识别后端。
@@ -121,3 +148,19 @@ cmake --build build --config Release
 ## 已知限制
 - 某些具有反作弊或管理员高权限的游戏/应用（如部分网游终端或 UAC 弹窗），可能无法响应热键或拒绝模拟键盘粘贴输入。
 - 当前上屏逻辑使用模拟 Unicode 键盘输入；少数高权限或特殊输入框仍可能拒绝模拟输入。
+
+## 🔐 安全与隐私
+
+- 使用 Sherpa-onnx 本地后端时，语音识别可完全在本机完成。
+- 云端后端会将音频或文本发送至所选择的服务商，请同时阅读对应服务商的隐私条款。
+- API Key 保存在本机的 `voice_ime.ini` 中。请勿提交该文件，也不要在 Issue、日志或截图中暴露密钥和私人音频内容。
+- 安装脚本会从 GitHub、Hugging Face 或 NVIDIA 下载第三方运行时和模型；建议在受控环境中检查来源后再运行。
+- 安全问题请按照 [SECURITY.md](SECURITY.md) 私下报告，不要先创建包含漏洞细节的公开 Issue。
+
+## 🤝 参与贡献
+
+Bug 报告、功能建议和代码贡献均欢迎。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，并使用仓库提供的 Issue 模板。涉及安全的问题请遵循 [安全策略](SECURITY.md)。
+
+## 📄 许可证
+
+本项目采用 [MIT License](LICENSE) 开源。
