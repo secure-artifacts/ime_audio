@@ -29,7 +29,7 @@ jobs:
         run: iscc installer.iss
 
       - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: 'build/Installer/VoiceIME_Setup.exe'
 
