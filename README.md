@@ -3,7 +3,6 @@
 [![Latest release](https://img.shields.io/github/v/release/secure-artifacts/ime_audio?display_name=tag)](https://github.com/secure-artifacts/ime_audio/releases/latest)
 [![Release downloads](https://img.shields.io/github/downloads/secure-artifacts/ime_audio/total)](https://github.com/secure-artifacts/ime_audio/releases)
 [![Release build](https://github.com/secure-artifacts/ime_audio/actions/workflows/release.yml/badge.svg)](https://github.com/secure-artifacts/ime_audio/actions/workflows/release.yml)
-[![CodeQL](https://github.com/secure-artifacts/ime_audio/actions/workflows/codeql.yml/badge.svg)](https://github.com/secure-artifacts/ime_audio/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 VoiceIME is an open-source Windows 10/11 desktop utility that turns speech into text in any application. It combines a native C/Win32 interface with interchangeable cloud and fully offline speech-recognition backends, global hotkeys, multilingual text processing, and a reusable terminology library.
